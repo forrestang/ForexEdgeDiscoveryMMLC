@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(pip install:*)",
+      "Bash(python -m uvicorn:*)",
+      "Bash(npm install)",
+      "Bash(npm run dev:*)",
+      "Bash(taskkill:*)",
+      "Bash(exit 0)",
+      "Bash(netstat:*)",
+      "Bash(xargs:*)",
+      "Bash(python -c:*)",
+      "Bash(timeout /t 3)",
+      "Bash(del /S /Q \"C:\\Users\\lawfp\\Desktop\\Data4\\cache\\*\")",
+      "Bash(timeout /t 2)",
+      "Bash(timeout /t)",
+      "Bash(kill:*)",
+      "Bash(python:*)",
+      "Bash(npm run build:*)",
+      "Bash(npx vite:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(for pid in 4332 21576 20340)",
+      "Bash(do taskkill //F //PID $pid)",
+      "Bash(done)",
+      "Bash(wmic process where \"ProcessId=4332 or ProcessId=21576 or ProcessId=20340\" get Name,ProcessId,ExecutablePath)",
+      "Bash(tasklist:*)",
+      "Bash(cat:*)",
+      "Bash(git init:*)",
+      "Bash(git config:*)",
+      "Bash(git remote add:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
