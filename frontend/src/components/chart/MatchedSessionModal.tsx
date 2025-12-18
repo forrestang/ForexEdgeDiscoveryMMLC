@@ -138,6 +138,8 @@ export function MatchedSessionModal({
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
   const [popupContainer, setPopupContainer] = useState<HTMLDivElement | null>(null)
   const [chartDimensions, setChartDimensions] = useState({ width: 1150, height: 500 })
+  // Default to point-in-time view for popup (show waveform at match position)
+  const [showPointInTime, setShowPointInTime] = useState(true)
   const popupRef = useRef<Window | null>(null)
 
   // Get the currently selected match
@@ -151,6 +153,8 @@ export function MatchedSessionModal({
     session: parsedSession?.session || 'full_day',
     timeframe: parsedSession?.timeframe || 'M5',
     workingDirectory,
+    // Pass bar_index when in point-in-time mode
+    barIndex: showPointInTime ? selectedMatch?.bar_index : undefined,
     enabled: isOpen && !!parsedSession,
   })
 
@@ -369,6 +373,25 @@ export function MatchedSessionModal({
       {/* Header */}
       <div className="header">
         <h2>Matched Session Viewer</h2>
+        <button
+          onClick={() => setShowPointInTime(!showPointInTime)}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '6px 12px',
+            borderRadius: '4px',
+            fontSize: '12px',
+            fontWeight: 500,
+            border: 'none',
+            cursor: 'pointer',
+            background: showPointInTime ? '#3b82f6' : '#334155',
+            color: '#e2e8f0',
+          }}
+          title={showPointInTime ? 'Showing waveform at match bar' : 'Showing full session waveform'}
+        >
+          {showPointInTime ? 'Point-in-Time' : 'Full Session'}
+        </button>
       </div>
 
       {/* Dropdown selector */}

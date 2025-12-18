@@ -1,7 +1,7 @@
-import { useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Plot from 'react-plotly.js'
 import { useChartData } from '@/hooks/useChartData'
-import { Loader2, BarChart3 } from 'lucide-react'
+import { Loader2, BarChart3, Clock, CalendarDays } from 'lucide-react'
 import type { ChartSettings } from '@/App'
 import type { Data, Layout, Shape, PlotMouseEvent } from 'plotly.js'
 
@@ -20,12 +20,17 @@ export function CandlestickChart({
   onBarSelect,
   onTotalBarsChange,
 }: CandlestickChartProps) {
+  // Toggle for point-in-time vs full session waveform view
+  const [showPointInTime, setShowPointInTime] = useState(false)
+
   const { data, isLoading, error } = useChartData({
     pair: chartSettings.pair,
     date: chartSettings.date,
     session: chartSettings.session,
     timeframe: chartSettings.timeframe,
     workingDirectory,
+    // Only pass barIndex when point-in-time mode is enabled
+    barIndex: showPointInTime ? (selectedBarIndex ?? undefined) : undefined,
   })
 
   // Update total bars count when data changes
@@ -216,15 +221,41 @@ export function CandlestickChart({
   ]
 
   return (
-    <div className="flex-1 w-full min-h-0">
-      <Plot
-        data={allTraces}
-        layout={layout}
-        config={config}
-        useResizeHandler
-        style={{ width: '100%', height: '100%' }}
-        onClick={handleClick}
-      />
+    <div className="flex-1 w-full min-h-0 flex flex-col">
+      {/* Toggle button for waveform view */}
+      <div className="flex items-center justify-end px-2 py-1 bg-background/50">
+        <button
+          onClick={() => setShowPointInTime(!showPointInTime)}
+          className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium transition-colors ${
+            showPointInTime
+              ? 'bg-primary text-primary-foreground'
+              : 'bg-muted text-muted-foreground hover:bg-muted/80'
+          }`}
+          title={showPointInTime ? 'Showing waveform at current bar' : 'Showing full session waveform'}
+        >
+          {showPointInTime ? (
+            <>
+              <Clock className="h-3 w-3" />
+              Point-in-Time
+            </>
+          ) : (
+            <>
+              <CalendarDays className="h-3 w-3" />
+              Full Session
+            </>
+          )}
+        </button>
+      </div>
+      <div className="flex-1 min-h-0">
+        <Plot
+          data={allTraces}
+          layout={layout}
+          config={config}
+          useResizeHandler
+          style={{ width: '100%', height: '100%' }}
+          onClick={handleClick}
+        />
+      </div>
     </div>
   )
 }

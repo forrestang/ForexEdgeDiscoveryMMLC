@@ -31,3 +31,4 @@ class ChartResponse(BaseModel):
     session: str
     candles: list[CandleData]
     waveform: list[WaveData]
+    debug: Optional[list[str]] = None

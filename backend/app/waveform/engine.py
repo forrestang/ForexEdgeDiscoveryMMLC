@@ -135,17 +135,78 @@ class WaveformEngine:
 
         h, l = candle.high, candle.low
         ts = candle.timestamp
+        current = self._wave_stack[-1]
 
-        # Determine tick simulation order based on bar type
-        if candle.is_bullish or candle.close == candle.open:
-            # Bullish or neutral: Open -> Low -> High
-            # First check if Low creates any action, then High
-            self._process_tick(l, ts)
-            self._process_tick(h, ts)
+        # Detect outside bar: breaks BOTH the current wave's start AND extends past its end
+        if current.direction == Direction.UP:
+            is_outside = (l < current.start_price) and (h > current.end_price)
         else:
-            # Bearish: Open -> High -> Low
-            self._process_tick(h, ts)
+            is_outside = (h > current.start_price) and (l < current.end_price)
+
+        if is_outside:
+            # Handle outside bar atomically to prevent double-erasure
+            self._process_outside_bar(candle)
+        else:
+            # Normal processing: determine tick simulation order based on bar type
+            if candle.is_bullish or candle.close == candle.open:
+                # Bullish or neutral: Open -> Low -> High
+                self._process_tick(l, ts)
+                self._process_tick(h, ts)
+            else:
+                # Bearish: Open -> High -> Low
+                self._process_tick(h, ts)
+                self._process_tick(l, ts)
+
+    def _process_outside_bar(self, candle: Candle):
+        """
+        Handle outside bar atomically - prevents double-erasure.
+
+        For an outside bar (breaks both start and end of current wave):
+        1. Process the first tick normally (may cause erasure and create new structure)
+        2. Process the second tick with restricted behavior (can only extend, not erase)
+        """
+        h, l = candle.high, candle.low
+        ts = candle.timestamp
+
+        if candle.is_bullish or candle.close == candle.open:
+            # Bullish outside bar: Low first, then High
             self._process_tick(l, ts)
+            self._process_tick_extend_only(h, ts)
+        else:
+            # Bearish outside bar: High first, then Low
+            self._process_tick(h, ts)
+            self._process_tick_extend_only(l, ts)
+
+    def _process_tick_extend_only(self, price: float, ts: datetime):
+        """
+        Process a tick that can only extend or spawn children, never erase.
+        Used for the second tick of an outside bar to prevent double-erasure.
+        """
+        if not self._wave_stack:
+            return
+
+        current = self._wave_stack[-1]
+
+        if current.direction == Direction.UP:
+            if price > current.end_price:
+                # Extension - allowed
+                current.end_price = price
+                current.end_time = ts
+                self._propagate_extreme_to_l1(current)
+                self._check_parent_erasure(price, ts)
+            elif price < current.end_price and price >= current.start_price:
+                # Spawn child - allowed
+                self._spawn_child(Direction.DOWN, current.end_price, current.end_time, price, ts)
+        else:  # DOWN
+            if price < current.end_price:
+                # Extension - allowed
+                current.end_price = price
+                current.end_time = ts
+                self._propagate_extreme_to_l1(current)
+                self._check_parent_erasure(price, ts)
+            elif price > current.end_price and price <= current.start_price:
+                # Spawn child - allowed
+                self._spawn_child(Direction.UP, current.end_price, current.end_time, price, ts)
 
     def _process_tick(self, price: float, ts: datetime):
         """

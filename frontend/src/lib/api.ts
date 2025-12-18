@@ -93,6 +93,7 @@ export const api = {
         date: string;
         session: SessionType;
         workingDirectory?: string;
+        barIndex?: number;
       }
     ): Promise<ChartResponse> => {
       const searchParams = new URLSearchParams({
@@ -102,6 +103,9 @@ export const api = {
       });
       if (params.workingDirectory) {
         searchParams.set('working_directory', params.workingDirectory);
+      }
+      if (params.barIndex !== undefined) {
+        searchParams.set('bar_index', String(params.barIndex));
       }
       return fetchApi(`/chart/${pair}?${searchParams.toString()}`);
     },

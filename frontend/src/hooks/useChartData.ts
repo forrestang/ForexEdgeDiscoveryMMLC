@@ -8,20 +8,22 @@ interface UseChartDataParams {
   session: SessionType | string
   timeframe: TimeframeType | string
   workingDirectory?: string
+  barIndex?: number
   enabled?: boolean
 }
 
 export function useChartData(params: UseChartDataParams) {
-  const { pair, date, session, timeframe, workingDirectory, enabled = true } = params
+  const { pair, date, session, timeframe, workingDirectory, barIndex, enabled = true } = params
 
   return useQuery({
-    queryKey: ['chart', pair, date, session, timeframe, workingDirectory],
+    queryKey: ['chart', pair, date, session, timeframe, workingDirectory, barIndex],
     queryFn: () =>
       api.chart.getData(pair!, {
         timeframe: timeframe as TimeframeType,
         date: date!,
         session: session as SessionType,
         workingDirectory,
+        barIndex,
       }),
     enabled: enabled && !!pair && !!date,
   })
