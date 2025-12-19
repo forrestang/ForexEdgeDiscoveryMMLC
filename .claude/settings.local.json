@@ -29,7 +29,18 @@
       "Bash(git init:*)",
       "Bash(git config:*)",
       "Bash(git remote add:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(wmic:*)",
+      "Bash(ping:*)",
+      "Bash(timeout /t 5)",
+      "Bash(powershell -ExecutionPolicy Bypass -File create_zip.ps1)",
+      "Bash(powershell -Command \"\nAdd-Type -AssemblyName System.IO.Compression.FileSystem\n$zip = [System.IO.Compression.ZipFile]::OpenRead\\(''full_app_source.zip''\\)\n$entries = $zip.Entries | Select-Object FullName | Sort-Object FullName\n$zip.Dispose\\(\\)\nWrite-Host ''Files included in zip:'' -ForegroundColor Green\n$entries | ForEach-Object { Write-Host $_FullName }\nWrite-Host ''''\nWrite-Host ''Total files:'' $entries.Count\n\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File list_zip.ps1:*)",
+      "Bash(del create_zip.ps1 list_zip.ps1)",
+      "Bash(powershell -Command \"Remove-Item create_zip.ps1, list_zip.ps1\")",
+      "Bash(git reset:*)"
     ],
     "deny": [],
     "ask": []

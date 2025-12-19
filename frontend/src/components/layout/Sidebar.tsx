@@ -4,6 +4,7 @@ import { PipelineTab } from '@/components/sidebar/PipelineTab'
 import { DataTab } from '@/components/sidebar/DataTab'
 import { ExploreTab } from '@/components/sidebar/ExploreTab'
 import { EdgeFinderTab } from '@/components/sidebar/EdgeFinderTab'
+import { EdgeStatsPanel } from '@/components/chart/EdgeStatsPanel'
 import { Settings, Database, Search, Brain } from 'lucide-react'
 import type { ChartSettings } from '@/App'
 import type { EdgeProbabilities } from '@/types'
@@ -17,6 +18,12 @@ interface SidebarProps {
   setEdgeProbabilities: (edge: EdgeProbabilities | null) => void
   kNeighbors: number
   setKNeighbors: (k: number) => void
+  // EdgeStatsPanel props
+  selectedBarIndex: number | null
+  totalBars: number | null
+  isInferenceLoading: boolean
+  inferenceError: string | null
+  onViewMatches: () => void
 }
 
 export function Sidebar({
@@ -28,8 +35,16 @@ export function Sidebar({
   setEdgeProbabilities,
   kNeighbors,
   setKNeighbors,
+  selectedBarIndex,
+  totalBars,
+  isInferenceLoading,
+  inferenceError,
+  onViewMatches,
 }: SidebarProps) {
   const [activeTab, setActiveTab] = useState('explore')
+
+  // Show EdgeStatsPanel for explore and edge tabs
+  const showEdgeStats = activeTab === 'explore' || activeTab === 'edge'
 
   return (
     <div className="h-full flex flex-col bg-card border-r border-border">
@@ -38,7 +53,7 @@ export function Sidebar({
         <p className="text-xs text-muted-foreground">Recursive Session Analysis</p>
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col min-h-0">
         <TabsList className="w-full justify-start rounded-none border-b border-border bg-transparent p-0">
           <TabsTrigger
             value="pipeline"
@@ -104,6 +119,21 @@ export function Sidebar({
           </TabsContent>
         </div>
       </Tabs>
+
+      {/* EdgeStatsPanel at bottom for Explore and Edge tabs */}
+      {showEdgeStats && (
+        <div className="border-t border-border max-h-[40%] overflow-auto">
+          <EdgeStatsPanel
+            edge={edgeProbabilities}
+            isLoading={isInferenceLoading}
+            error={inferenceError}
+            selectedBarIndex={selectedBarIndex}
+            totalBars={totalBars}
+            kNeighbors={kNeighbors}
+            onViewMatches={onViewMatches}
+          />
+        </div>
+      )}
     </div>
   )
 }

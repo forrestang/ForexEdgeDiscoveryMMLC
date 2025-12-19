@@ -258,3 +258,32 @@ export interface ModelActionResponse {
   success: boolean;
   message: string;
 }
+
+// Edge Mining Types
+export interface BarEdgeData {
+  bar_index: number;
+  next_bar_win_rate: number;
+  next_bar_avg_move: number;
+  next_bar_edge_score: number;
+  session_bias: 'long' | 'short';
+  session_win_rate: number;
+  session_avg_mfe: number;
+  session_avg_mae: number;
+  session_risk_reward: number;
+  session_edge_score: number;
+  num_matches: number;
+  avg_distance: number;
+}
+
+export interface EdgeGraphDataPoint {
+  bar_index: number;
+  session_score: number;
+  next_bar_score: number;
+}
+
+export interface MineSessionResponse {
+  status: string;
+  graph_data: EdgeGraphDataPoint[];
+  edge_table: BarEdgeData[];
+  message: string;
+}

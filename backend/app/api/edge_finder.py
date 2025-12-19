@@ -39,6 +39,9 @@ from app.schemas.edge_finder import (
     ModelSummary,
     IndexSummary,
     MatchDetailResponse,
+    MineSessionRequest,
+    MineSessionResponse,
+    BarEdgeDataResponse,
 )
 
 router = APIRouter()
@@ -739,6 +742,86 @@ async def run_chart_inference(request: ChartInferenceRequest):
                     ],
                 ),
                 message=f"Found {edge.num_matches} similar patterns for {session_id}",
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Edge Mining Endpoints ---
+
+@router.post("/mining/session", response_model=MineSessionResponse)
+async def mine_session(request: MineSessionRequest):
+    """
+    Mine edge scores for ALL bars in a session simultaneously.
+
+    Uses FAISS-accelerated batch KNN search to compute dual-horizon
+    edge metrics for every bar position in the session.
+    """
+    global _inference_engine
+
+    with _inference_lock:
+        if _inference_engine is None or not _inference_engine.is_ready:
+            raise HTTPException(
+                status_code=400,
+                detail="Index not loaded. Call /index/build or /index/load first.",
+            )
+
+        try:
+            from app.edge_finder.storage import load_session_dataset
+            from app.edge_finder.mining import EdgeMiner
+
+            working_dir = _get_working_dir(request.working_directory)
+
+            # Construct session_id from chart identifiers
+            session_id = f"{request.pair}_{request.date}_{request.session}_{request.timeframe}"
+
+            # Load the stored session
+            session = load_session_dataset(session_id, working_dir)
+
+            if session is None:
+                return MineSessionResponse(
+                    status="not_found",
+                    graph_data=[],
+                    edge_table=[],
+                    message=f"Session not found: {session_id}. Generate sessions first.",
+                )
+
+            # Create miner and run
+            miner = EdgeMiner(
+                index=_inference_engine.index,
+                k_neighbors=request.k_neighbors,
+                use_faiss=True,
+            )
+
+            result = miner.mine_from_full_matrix(session.matrix)
+
+            # Convert edge_table to response format
+            edge_table_response = [
+                BarEdgeDataResponse(
+                    bar_index=e.bar_index,
+                    next_bar_win_rate=e.next_bar_win_rate,
+                    next_bar_avg_move=e.next_bar_avg_move,
+                    next_bar_edge_score=e.next_bar_edge_score,
+                    session_bias=e.session_bias,
+                    session_win_rate=e.session_win_rate,
+                    session_avg_mfe=e.session_avg_mfe,
+                    session_avg_mae=e.session_avg_mae,
+                    session_risk_reward=e.session_risk_reward,
+                    session_edge_score=e.session_edge_score,
+                    num_matches=e.num_matches,
+                    avg_distance=e.avg_distance,
+                )
+                for e in result.edge_table
+            ]
+
+            return MineSessionResponse(
+                status="success",
+                graph_data=result.graph_data,
+                edge_table=edge_table_response,
+                message=f"Mined edge scores for {len(result.edge_table)} bars",
             )
 
         except HTTPException:

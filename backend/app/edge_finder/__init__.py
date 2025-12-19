@@ -48,6 +48,12 @@ from app.edge_finder.inference import (
     EdgeProbabilities,
 )
 
+from app.edge_finder.mining import (
+    EdgeMiner,
+    BarEdgeData,
+    EdgeMiningResult,
+)
+
 __all__ = [
     # Matrix serialization
     "snapshot_to_row",
@@ -80,4 +86,8 @@ __all__ = [
     # Inference
     "EdgeInferenceEngine",
     "EdgeProbabilities",
+    # Mining
+    "EdgeMiner",
+    "BarEdgeData",
+    "EdgeMiningResult",
 ]

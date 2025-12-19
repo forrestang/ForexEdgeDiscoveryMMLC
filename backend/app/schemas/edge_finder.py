@@ -325,3 +325,39 @@ class FileListResponse(BaseModel):
     sessions_by_timeframe: dict[str, int]
     models: list[ModelSummary]
     indices: list[IndexSummary]
+
+
+# --- Edge Mining ---
+
+class MineSessionRequest(BaseModel):
+    """Request to mine edge scores for a session."""
+    working_directory: Optional[str] = None
+    pair: str
+    date: str  # ISO format: "2022-01-03"
+    session: str = "full_day"
+    timeframe: str = "M10"
+    k_neighbors: int = 50
+
+
+class BarEdgeDataResponse(BaseModel):
+    """Edge metrics for a single bar."""
+    bar_index: int
+    next_bar_win_rate: float
+    next_bar_avg_move: float
+    next_bar_edge_score: float
+    session_bias: str  # "long" or "short"
+    session_win_rate: float
+    session_avg_mfe: float
+    session_avg_mae: float
+    session_risk_reward: float
+    session_edge_score: float
+    num_matches: int
+    avg_distance: float
+
+
+class MineSessionResponse(BaseModel):
+    """Response from session mining."""
+    status: str
+    graph_data: list[dict]  # [{bar_index, session_score, next_bar_score}]
+    edge_table: list[BarEdgeDataResponse]
+    message: str

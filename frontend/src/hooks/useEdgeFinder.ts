@@ -306,3 +306,11 @@ export function useFiles(workingDirectory?: string) {
     queryFn: () => api.edgeFinder.getFiles(workingDirectory),
   })
 }
+
+// --- Edge Mining Hook ---
+
+export function useEdgeMining() {
+  return useMutation({
+    mutationFn: api.edgeFinder.mineSession,
+  })
+}

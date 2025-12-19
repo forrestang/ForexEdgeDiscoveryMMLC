@@ -22,6 +22,7 @@ import type {
   AutoSetupStatus,
   FileListResponse,
   ModelActionResponse,
+  MineSessionResponse,
 } from '@/types';
 
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
@@ -405,5 +406,26 @@ export const api = {
         : '';
       return fetchApi(`/edge-finder/files${params}`);
     },
+
+    // Edge Mining
+    mineSession: (params: {
+      pair: string;
+      date: string;
+      session: string;
+      timeframe: string;
+      workingDirectory?: string;
+      k_neighbors?: number;
+    }): Promise<MineSessionResponse> =>
+      fetchApi('/edge-finder/mining/session', {
+        method: 'POST',
+        body: JSON.stringify({
+          pair: params.pair,
+          date: params.date,
+          session: params.session,
+          timeframe: params.timeframe,
+          working_directory: params.workingDirectory,
+          k_neighbors: params.k_neighbors || 50,
+        }),
+      }),
   },
 };
