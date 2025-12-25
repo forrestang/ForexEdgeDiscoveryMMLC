@@ -156,9 +156,6 @@ class MMLCDevEngine:
         if self._mode == "spline":
             spline_waves = self._build_spline_waves()
             waves.extend(spline_waves)
-            print(f"[SPLINE DEBUG] Total spline segments: {len(self.L1_spline_segments)}")
-            for i, seg in enumerate(self.L1_spline_segments):
-                print(f"  Segment {i}: origin=({seg[0]}, {seg[1]:.5f}) -> end=({seg[2]}, {seg[3]:.5f})")
 
         return waves
 
@@ -228,6 +225,9 @@ class MMLCDevEngine:
                 # Push swing high to array (confirms the high)
                 self.L1_swing_x.append(self.L1_High_bar)
                 self.L1_swing_y.append(self.L1_High)
+                # Track spline segment for the initial developing leg of new direction
+                if self._mode == "spline":
+                    self.L1_spline_segments.append((self.L1_High_bar, self.L1_High, bar_idx, candle.low))
                 # Update L1_Low to new low
                 self.L1_Low = candle.low
                 self.L1_Low_bar = bar_idx
@@ -300,6 +300,9 @@ class MMLCDevEngine:
                 # Push swing low to array (confirms the low)
                 self.L1_swing_x.append(self.L1_Low_bar)
                 self.L1_swing_y.append(self.L1_Low)
+                # Track spline segment for the initial developing leg of new direction
+                if self._mode == "spline":
+                    self.L1_spline_segments.append((self.L1_Low_bar, self.L1_Low, bar_idx, candle.high))
                 # Update L1_High to new high
                 self.L1_High = candle.high
                 self.L1_High_bar = bar_idx

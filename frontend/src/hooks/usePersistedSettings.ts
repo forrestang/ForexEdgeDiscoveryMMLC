@@ -173,9 +173,9 @@ export function useMMLCDevSettings() {
     DEFAULT_MMLC_DEV_SETTINGS
   )
 
-  const updateSettings = (updates: Partial<MMLCDevSettings>) => {
+  const updateSettings = useCallback((updates: Partial<MMLCDevSettings>) => {
     setSettings((prev) => ({ ...prev, ...updates }))
-  }
+  }, [setSettings])
 
   return { settings, updateSettings }
 }

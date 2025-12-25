@@ -178,6 +178,7 @@ async def run_dev_engine(
                 end_price=wave.end_price,
                 color=wave.color,
                 parent_id=wave.parent_id,
+                is_spline=wave.is_spline,
             )
         )
 
