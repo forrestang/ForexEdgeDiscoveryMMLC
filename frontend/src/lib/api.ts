@@ -23,6 +23,8 @@ import type {
   FileListResponse,
   ModelActionResponse,
   MineSessionResponse,
+  DevSessionResponse,
+  DevRunResponse,
 } from '@/types';
 
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
@@ -427,5 +429,55 @@ export const api = {
           k_neighbors: params.k_neighbors || 50,
         }),
       }),
+  },
+
+  mmlcDev: {
+    loadSession: (params: {
+      pair: string;
+      date: string;
+      session: SessionType;
+      timeframe: TimeframeType;
+      workingDirectory?: string;
+    }): Promise<DevSessionResponse> => {
+      const searchParams = new URLSearchParams({
+        date: params.date,
+        session: params.session,
+        timeframe: params.timeframe,
+      });
+      if (params.workingDirectory) {
+        searchParams.set('working_directory', params.workingDirectory);
+      }
+      return fetchApi(`/mmlc-dev/session/${params.pair}?${searchParams.toString()}`);
+    },
+
+    run: (params: {
+      pair: string;
+      date: string;
+      session: SessionType;
+      timeframe: TimeframeType;
+      startBar?: number;
+      endBar?: number;
+      mode?: 'complete' | 'spline';
+      workingDirectory?: string;
+    }): Promise<DevRunResponse> => {
+      const searchParams = new URLSearchParams({
+        date: params.date,
+        session: params.session,
+        timeframe: params.timeframe,
+      });
+      if (params.startBar !== undefined) {
+        searchParams.set('start_bar', String(params.startBar));
+      }
+      if (params.endBar !== undefined) {
+        searchParams.set('end_bar', String(params.endBar));
+      }
+      if (params.mode) {
+        searchParams.set('mode', params.mode);
+      }
+      if (params.workingDirectory) {
+        searchParams.set('working_directory', params.workingDirectory);
+      }
+      return fetchApi(`/mmlc-dev/run/${params.pair}?${searchParams.toString()}`);
+    },
   },
 };

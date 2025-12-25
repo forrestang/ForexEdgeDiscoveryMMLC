@@ -376,18 +376,52 @@ class EdgeMiner:
         counts_safe = np.maximum(counts, 1.0)  # Avoid division by zero
 
         # ========================================
-        # HORIZON A: Next Bar Metrics
+        # HORIZON A: Next Bar Metrics (Conditional Expectancy)
         # ========================================
+        # Same formula as Session: direction × (probability × avg_MFE_of_dominant_side)
 
-        # Win rate: % where next_bar_move > 0
-        next_bar_wins = (next_bar_moves > 0).astype(np.float32) * valid_float
-        next_bar_win_rate = next_bar_wins.sum(axis=1) / counts_safe
+        # 1. Determine Bias: next_bar_move > 0 = bull, < 0 = bear
+        nb_bull_mask = (next_bar_moves > 0).astype(np.float32) * valid_float
+        nb_bear_mask = (next_bar_moves < 0).astype(np.float32) * valid_float
 
-        # Average move
+        nb_bull_count = nb_bull_mask.sum(axis=1)
+        nb_bear_count = nb_bear_mask.sum(axis=1)
+
+        # 2. Select Dominant Side (ties = no edge, score will be 0)
+        nb_bias_is_long = nb_bull_count > nb_bear_count
+        nb_bias_is_short = nb_bear_count > nb_bull_count
+
+        # Direction: +1 for long, -1 for short, 0 for tie
+        nb_direction_sign = np.where(
+            nb_bias_is_long, 1.0, np.where(nb_bias_is_short, -1.0, 0.0)
+        )
+
+        # Probability = dominant_count / total
+        nb_dominant_count = np.where(nb_bias_is_long, nb_bull_count, nb_bear_count)
+        nb_probability = nb_dominant_count / counts_safe
+
+        # 3. MFE = Average |next_bar_move| of ONLY dominant-side neighbors
+        abs_next_bar_moves = np.abs(next_bar_moves)
+
+        nb_bull_mfe_sum = (abs_next_bar_moves * nb_bull_mask).sum(axis=1)
+        nb_bear_mfe_sum = (abs_next_bar_moves * nb_bear_mask).sum(axis=1)
+
+        nb_dominant_count_safe = np.maximum(nb_dominant_count, 1.0)
+
+        nb_raw_ev = np.where(
+            nb_bias_is_long,
+            nb_bull_mfe_sum / nb_dominant_count_safe,
+            nb_bear_mfe_sum / nb_dominant_count_safe,
+        )
+
+        # 4. Final Score: direction × (probability × raw_EV)
+        next_bar_edge_score = nb_direction_sign * (nb_probability * nb_raw_ev)
+
+        # Win rate = probability for display consistency
+        next_bar_win_rate = nb_probability
+
+        # Keep avg_move for display (uses all neighbors)
         next_bar_avg_move = next_bar_moves.sum(axis=1) / counts_safe
-
-        # Edge score: win_rate * avg_move
-        next_bar_edge_score = next_bar_win_rate * next_bar_avg_move
 
         # ========================================
         # HORIZON B: Session End Metrics (Conditional Expectancy)

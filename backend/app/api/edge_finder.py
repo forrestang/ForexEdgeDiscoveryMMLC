@@ -24,6 +24,8 @@ from app.schemas.edge_finder import (
     BuildIndexRequest,
     BuildIndexResponse,
     IndexStatus,
+    IndexBuildingStatus,
+    GenerationStatus,
     InferenceRequest,
     EdgeProbabilitiesResponse,
     InferenceResponse,
@@ -74,6 +76,21 @@ _generation_state = {
     "progress": 0.0,
     "current_session": None,
     "message": "Idle",
+}
+
+_index_state = {
+    "is_building": False,
+    "current_session": 0,
+    "total_sessions": 0,
+    "progress": 0.0,
+    "message": "Idle",
+}
+
+_loading_state = {
+    "is_loading": False,
+    "progress": 0.0,
+    "message": "Idle",
+    "model_name": None,
 }
 
 # Inference engine (lazy loaded)
@@ -303,6 +320,134 @@ def _run_training(
         _training_state["is_training"] = False
 
 
+def _run_index_build(
+    working_dir: Path,
+    model_name: str,
+    pair: Optional[str],
+    session_type: Optional[str],
+    timeframe: Optional[str],
+    save_index: bool = True,
+    index_name: str = "latent_index",
+):
+    """Background task for building vector index with progress tracking."""
+    global _index_state, _inference_engine
+
+    try:
+        from app.edge_finder.inference import EdgeInferenceEngine
+        from app.edge_finder.storage import list_session_files
+
+        _index_state["is_building"] = True
+        _index_state["message"] = "Initializing..."
+        _index_state["progress"] = 0.0
+
+        # Count total sessions first
+        session_ids = list_session_files(
+            working_directory=working_dir,
+            pair=pair,
+            session_type=session_type,
+            timeframe=timeframe,
+        )
+        _index_state["total_sessions"] = len(session_ids)
+
+        # Progress callback
+        def on_progress(current: int, total: int):
+            _index_state["current_session"] = current
+            _index_state["total_sessions"] = total
+            _index_state["progress"] = current / total if total > 0 else 0
+            _index_state["message"] = f"Encoding session {current}/{total}"
+
+        # Create engine and build index
+        engine = EdgeInferenceEngine(
+            model_name=model_name,
+            working_directory=working_dir,
+            device="auto",
+        )
+
+        _index_state["message"] = "Loading model..."
+
+        num_vectors = engine.initialize(
+            load_saved_index=False,
+            pair=pair,
+            session_type=session_type,
+            timeframe=timeframe,
+            progress_callback=on_progress,
+        )
+
+        if save_index and num_vectors > 0:
+            _index_state["message"] = "Saving index..."
+            engine.save_index(index_name)
+
+        with _inference_lock:
+            _inference_engine = engine
+
+        _index_state["message"] = "Complete"
+        _index_state["progress"] = 1.0
+
+    except Exception as e:
+        _index_state["message"] = f"Error: {str(e)}"
+
+    finally:
+        _index_state["is_building"] = False
+
+
+def _run_loading(
+    working_dir: Path,
+    model_name: str,
+):
+    """Background task for loading saved model and index."""
+    global _loading_state, _inference_engine, _index_state
+
+    try:
+        from app.edge_finder.inference import EdgeInferenceEngine
+
+        _loading_state["is_loading"] = True
+        _loading_state["model_name"] = model_name
+        _loading_state["message"] = "Loading model..."
+        _loading_state["progress"] = 0.2
+
+        engine = EdgeInferenceEngine(
+            model_name=model_name,
+            working_directory=working_dir,
+            device="auto",
+        )
+
+        _loading_state["message"] = "Loading index..."
+        _loading_state["progress"] = 0.5
+
+        num_vectors = engine.initialize(
+            load_saved_index=True,
+            index_name="latent_index",
+        )
+
+        _loading_state["progress"] = 0.9
+
+        if num_vectors > 0:
+            with _inference_lock:
+                _inference_engine = engine
+            _loading_state["message"] = "Ready"
+            _loading_state["progress"] = 1.0
+        else:
+            # No saved index found - need to build it
+            _loading_state["is_loading"] = False
+            _loading_state["message"] = "No saved index, building..."
+
+            # Trigger index building
+            _run_index_build(
+                working_dir=working_dir,
+                model_name=model_name,
+                pair=None,
+                session_type=None,
+                timeframe=None,
+            )
+            return
+
+    except Exception as e:
+        _loading_state["message"] = f"Error: {str(e)}"
+
+    finally:
+        _loading_state["is_loading"] = False
+
+
 @router.post("/training/stop", response_model=TrainingResponse)
 async def stop_training():
     """Stop ongoing training."""
@@ -333,6 +478,31 @@ async def get_training_status():
         progress=_training_state["progress"],
         message=_training_state["message"],
         model_name=_training_state["model_name"],
+    )
+
+
+# --- Status Endpoints ---
+
+@router.get("/index/build/status", response_model=IndexBuildingStatus)
+async def get_index_building_status():
+    """Get current index building status."""
+    return IndexBuildingStatus(
+        is_building=_index_state["is_building"],
+        current_session=_index_state["current_session"],
+        total_sessions=_index_state["total_sessions"],
+        progress=_index_state["progress"],
+        message=_index_state["message"],
+    )
+
+
+@router.get("/sessions/generate/status", response_model=GenerationStatus)
+async def get_generation_status():
+    """Get current session generation status."""
+    return GenerationStatus(
+        is_generating=_generation_state["is_generating"],
+        current_session=_generation_state["current_session"],
+        progress=_generation_state["progress"],
+        message=_generation_state["message"],
     )
 
 
@@ -858,7 +1028,7 @@ async def auto_setup(request: AutoSetupRequest, background_tasks: BackgroundTask
 
     Use /auto-setup/status to monitor progress.
     """
-    global _inference_engine, _training_state
+    global _inference_engine, _training_state, _index_state
 
     working_dir = _get_working_dir(request.working_directory)
 
@@ -871,10 +1041,38 @@ async def auto_setup(request: AutoSetupRequest, background_tasks: BackgroundTask
             index_loaded=False,
             num_vectors=0,
             num_sessions=0,
-            message="Training in progress...",
+            message=_training_state["message"],
             training_epoch=_training_state["epoch"],
             training_total_epochs=_training_state["total_epochs"],
             training_loss=_training_state["val_loss"],
+        )
+
+    # Check if already building index
+    if _index_state["is_building"]:
+        return AutoSetupStatus(
+            status="building_index",
+            model_exists=True,
+            model_name=request.model_name,
+            index_loaded=False,
+            num_vectors=0,
+            num_sessions=0,
+            message=_index_state["message"],
+            index_current_session=_index_state["current_session"],
+            index_total_sessions=_index_state["total_sessions"],
+            index_progress=_index_state["progress"],
+        )
+
+    # Check if already loading
+    if _loading_state["is_loading"]:
+        return AutoSetupStatus(
+            status="loading",
+            model_exists=True,
+            model_name=_loading_state["model_name"],
+            index_loaded=False,
+            num_vectors=0,
+            num_sessions=0,
+            message=_loading_state["message"],
+            index_progress=_loading_state["progress"],
         )
 
     from app.edge_finder.storage import model_exists, get_session_stats
@@ -898,43 +1096,23 @@ async def auto_setup(request: AutoSetupRequest, background_tasks: BackgroundTask
                         message="Ready for inference",
                     )
 
-                # Try to load existing index or build new one
-                from app.edge_finder.inference import EdgeInferenceEngine
+            # Start loading in background
+            background_tasks.add_task(
+                _run_loading,
+                working_dir=working_dir,
+                model_name=request.model_name,
+            )
 
-                engine = EdgeInferenceEngine(
-                    model_name=request.model_name,
-                    working_directory=working_dir,
-                    device="auto",
-                )
-
-                # Try loading saved index first
-                num_vectors = engine.initialize(
-                    load_saved_index=True,
-                    index_name="latent_index",
-                )
-
-                if num_vectors == 0:
-                    # Build new index
-                    num_vectors = engine.initialize(
-                        load_saved_index=False,
-                        pair=request.pair,
-                        session_type=request.session_type,
-                        timeframe=request.timeframe,
-                    )
-                    if num_vectors > 0:
-                        engine.save_index("latent_index")
-
-                _inference_engine = engine
-
-                return AutoSetupStatus(
-                    status="ready",
-                    model_exists=True,
-                    model_name=request.model_name,
-                    index_loaded=num_vectors > 0,
-                    num_vectors=num_vectors,
-                    num_sessions=engine.num_indexed_sessions,
-                    message="Ready for inference" if num_vectors > 0 else "No sessions to index",
-                )
+            return AutoSetupStatus(
+                status="loading",
+                model_exists=True,
+                model_name=request.model_name,
+                index_loaded=False,
+                num_vectors=0,
+                num_sessions=0,
+                message="Loading model and index...",
+                index_progress=0.0,
+            )
 
         except Exception as e:
             return AutoSetupStatus(
@@ -989,7 +1167,7 @@ async def auto_setup(request: AutoSetupRequest, background_tasks: BackgroundTask
 @router.get("/auto-setup/status", response_model=AutoSetupStatus)
 async def get_auto_setup_status(working_directory: Optional[str] = None):
     """Get current status of auto-setup / inference readiness."""
-    global _inference_engine, _training_state, _last_training_result
+    global _inference_engine, _training_state, _last_training_result, _index_state
 
     working_dir = _get_working_dir(working_directory)
 
@@ -1006,6 +1184,21 @@ async def get_auto_setup_status(working_directory: Optional[str] = None):
             training_epoch=_training_state["epoch"],
             training_total_epochs=_training_state["total_epochs"],
             training_loss=_training_state["val_loss"],
+        )
+
+    # Check if building index
+    if _index_state["is_building"]:
+        return AutoSetupStatus(
+            status="building_index",
+            model_exists=True,
+            model_name=None,
+            index_loaded=False,
+            num_vectors=0,
+            num_sessions=0,
+            message=_index_state["message"],
+            index_current_session=_index_state["current_session"],
+            index_total_sessions=_index_state["total_sessions"],
+            index_progress=_index_state["progress"],
         )
 
     # Check if inference ready

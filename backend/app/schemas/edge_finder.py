@@ -244,9 +244,26 @@ class AutoSetupRequest(BaseModel):
     timeframe: Optional[str] = None
 
 
+class IndexBuildingStatus(BaseModel):
+    """Status of index building process."""
+    is_building: bool
+    current_session: int = 0
+    total_sessions: int = 0
+    progress: float = 0.0  # 0.0 - 1.0
+    message: str = "Idle"
+
+
+class GenerationStatus(BaseModel):
+    """Status of session generation process."""
+    is_generating: bool
+    current_session: Optional[str] = None
+    progress: float = 0.0  # 0.0 - 1.0
+    message: str = "Idle"
+
+
 class AutoSetupStatus(BaseModel):
     """Status of auto-setup process."""
-    status: str  # "ready", "checking", "training", "building_index", "error"
+    status: str  # "ready", "checking", "training", "building_index", "loading", "error"
     model_exists: bool
     model_name: Optional[str] = None
     index_loaded: bool
@@ -257,6 +274,10 @@ class AutoSetupStatus(BaseModel):
     training_epoch: int = 0
     training_total_epochs: int = 0
     training_loss: float = 0.0
+    # Index building progress (if building index)
+    index_current_session: int = 0
+    index_total_sessions: int = 0
+    index_progress: float = 0.0
     # Training completion info (shown after training completes)
     last_training_completed: bool = False
     last_training_best_loss: float = 0.0

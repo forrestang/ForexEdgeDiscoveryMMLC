@@ -23,6 +23,7 @@ interface AppLayoutProps {
   setTotalBars: (count: number | null) => void
   kNeighbors: number
   setKNeighbors: (k: number) => void
+  onNavigateToMMLCDev?: () => void
 }
 
 export function AppLayout({
@@ -38,6 +39,7 @@ export function AppLayout({
   setTotalBars,
   kNeighbors,
   setKNeighbors,
+  onNavigateToMMLCDev,
 }: AppLayoutProps) {
   const chartInference = useChartInference()
   const edgeMining = useEdgeMining()
@@ -188,6 +190,7 @@ export function AppLayout({
           isInferenceLoading={chartInference.isPending}
           inferenceError={getErrorMessage()}
           onViewMatches={() => setIsMatchModalOpen(true)}
+          onNavigateToMMLCDev={onNavigateToMMLCDev}
         />
       </Panel>
 

@@ -115,10 +115,11 @@ export function useAutoSetupStatus(workingDirectory?: string) {
     queryKey: ['edge-finder', 'auto-setup', 'status', workingDirectory],
     queryFn: () => api.edgeFinder.getAutoSetupStatus(workingDirectory),
     refetchInterval: (query) => {
-      // Poll more frequently during training
+      // Poll more frequently during active operations
       const status = query.state.data?.status
       if (status === 'training') return 2000
       if (status === 'building_index') return 1000
+      if (status === 'loading') return 500
       return 5000
     },
   })

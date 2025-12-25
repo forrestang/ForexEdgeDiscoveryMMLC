@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { AppLayout } from '@/components/layout/AppLayout'
-import { useKNeighbors } from '@/hooks/usePersistedSettings'
+import { MMLCDevPage } from '@/pages/MMLCDevPage'
+import { useKNeighbors, useCurrentPage } from '@/hooks/usePersistedSettings'
 import type { SessionType, TimeframeType, EdgeProbabilities } from '@/types'
 import { DEFAULT_WORKING_DIRECTORY } from '@/lib/constants'
 
@@ -12,6 +13,7 @@ export interface ChartSettings {
 }
 
 function App() {
+  const [currentPage, setCurrentPage] = useCurrentPage()
   const [workingDirectory, setWorkingDirectory] = useState(DEFAULT_WORKING_DIRECTORY)
   const [chartSettings, setChartSettings] = useState<ChartSettings>({
     pair: null,
@@ -23,6 +25,10 @@ function App() {
   const [selectedBarIndex, setSelectedBarIndex] = useState<number | null>(null)
   const [totalBars, setTotalBars] = useState<number | null>(null)
   const [kNeighbors, setKNeighbors] = useKNeighbors()
+
+  if (currentPage === 'mmlc-dev') {
+    return <MMLCDevPage onBack={() => setCurrentPage('main')} />
+  }
 
   return (
     <AppLayout
@@ -38,6 +44,7 @@ function App() {
       setTotalBars={setTotalBars}
       kNeighbors={kNeighbors}
       setKNeighbors={setKNeighbors}
+      onNavigateToMMLCDev={() => setCurrentPage('mmlc-dev')}
     />
   )
 }

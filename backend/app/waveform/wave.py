@@ -27,6 +27,7 @@ class Wave:
     end_price: float
     parent_id: Optional[int] = None
     is_active: bool = True
+    is_spline: bool = False  # True for intermediate developing leg lines
 
     @property
     def color(self) -> str:
@@ -45,6 +46,7 @@ class Wave:
             "end_price": self.end_price,
             "color": self.color,
             "parent_id": self.parent_id,
+            "is_spline": self.is_spline,
         }
 
 

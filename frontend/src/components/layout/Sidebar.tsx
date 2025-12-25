@@ -5,7 +5,9 @@ import { DataTab } from '@/components/sidebar/DataTab'
 import { ExploreTab } from '@/components/sidebar/ExploreTab'
 import { EdgeFinderTab } from '@/components/sidebar/EdgeFinderTab'
 import { EdgeStatsPanel } from '@/components/chart/EdgeStatsPanel'
-import { Settings, Database, Search, Brain } from 'lucide-react'
+import { MMLCDebugPanel } from '@/components/sidebar/MMLCDebugPanel'
+import { useSnapshotData } from '@/hooks/useChartData'
+import { Settings, Database, Search, Brain, Wrench } from 'lucide-react'
 import type { ChartSettings } from '@/App'
 import type { EdgeProbabilities } from '@/types'
 
@@ -24,6 +26,7 @@ interface SidebarProps {
   isInferenceLoading: boolean
   inferenceError: string | null
   onViewMatches: () => void
+  onNavigateToMMLCDev?: () => void
 }
 
 export function Sidebar({
@@ -40,8 +43,20 @@ export function Sidebar({
   isInferenceLoading,
   inferenceError,
   onViewMatches,
+  onNavigateToMMLCDev,
 }: SidebarProps) {
   const [activeTab, setActiveTab] = useState('explore')
+
+  // Fetch snapshot data for the debug panel (always fetches for selected bar)
+  const { data: snapshot, isLoading: snapshotLoading } = useSnapshotData({
+    pair: chartSettings.pair,
+    date: chartSettings.date,
+    session: chartSettings.session,
+    timeframe: chartSettings.timeframe,
+    workingDirectory,
+    barIndex: selectedBarIndex ?? undefined,
+    enabled: selectedBarIndex !== null,
+  })
 
   // Show EdgeStatsPanel for explore and edge tabs
   const showEdgeStats = activeTab === 'explore' || activeTab === 'edge'
@@ -49,8 +64,21 @@ export function Sidebar({
   return (
     <div className="h-full flex flex-col bg-card border-r border-border">
       <div className="p-4 border-b border-border">
-        <h1 className="text-lg font-semibold">Waveform Analyzer</h1>
-        <p className="text-xs text-muted-foreground">Recursive Session Analysis</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-semibold">Waveform Analyzer</h1>
+            <p className="text-xs text-muted-foreground">Recursive Session Analysis</p>
+          </div>
+          {onNavigateToMMLCDev && (
+            <button
+              onClick={onNavigateToMMLCDev}
+              className="p-2 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+              title="MMLC Development Sandbox"
+            >
+              <Wrench className="h-4 w-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col min-h-0">
@@ -120,7 +148,7 @@ export function Sidebar({
         </div>
       </Tabs>
 
-      {/* EdgeStatsPanel at bottom for Explore and Edge tabs */}
+      {/* EdgeStatsPanel for Explore and Edge tabs */}
       {showEdgeStats && (
         <div className="border-t border-border max-h-[40%] overflow-auto">
           <EdgeStatsPanel
@@ -134,6 +162,13 @@ export function Sidebar({
           />
         </div>
       )}
+
+      {/* MMLC Debug Panel - always at very bottom */}
+      <MMLCDebugPanel
+        snapshot={snapshot}
+        selectedBarIndex={selectedBarIndex}
+        isLoading={snapshotLoading}
+      />
     </div>
   )
 }

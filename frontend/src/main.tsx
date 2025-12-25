@@ -7,7 +7,7 @@ import './index.css'
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 1000 * 60 * 5, // 5 minutes
+      staleTime: 0, // Always fetch fresh data
       retry: 1,
     },
   },

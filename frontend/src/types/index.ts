@@ -17,6 +17,28 @@ export interface WaveData {
   end_price: number;
   color: string;
   parent_id: number | null;
+  is_spline?: boolean;  // True for intermediate developing leg lines
+}
+
+// MMLC Debug Snapshot Types
+export interface WaveSnapshotData {
+  level: number;           // 1-5 (L1 through L5)
+  direction: number;       // +1 (UP) or -1 (DOWN)
+  amplitude: number;       // end_price - start_price (signed)
+  duration_bars: number;   // Number of bars since wave started
+  start_bar_index: number; // Bar index when this wave started
+}
+
+export interface StackSnapshotData {
+  bar_index: number;
+  timestamp: string;
+  close_price: number;
+  waves: WaveSnapshotData[];  // Active waves (L1 first, deepest last)
+  l1_count: number;  // Cumulative L1 leg count
+  l2_count: number;  // Cumulative L2 leg count
+  l3_count: number;  // Cumulative L3 leg count
+  l4_count: number;  // Cumulative L4 leg count
+  l5_count: number;  // Cumulative L5 leg count
 }
 
 export interface ChartResponse {
@@ -26,6 +48,8 @@ export interface ChartResponse {
   session: string;
   candles: CandleData[];
   waveform: WaveData[];
+  debug?: string[];
+  snapshot?: StackSnapshotData;  // MMLC state at bar_index (if provided)
 }
 
 export interface InstrumentInfo {
@@ -206,20 +230,40 @@ export interface AutoSetupRequest {
 }
 
 export interface AutoSetupStatus {
-  status: string;
+  status: string;  // "ready", "checking", "training", "building_index", "error"
   model_exists: boolean;
   model_name: string | null;
   index_loaded: boolean;
   num_vectors: number;
   num_sessions: number;
   message: string;
+  // Training progress (if training)
   training_epoch: number;
   training_total_epochs: number;
   training_loss: number;
+  // Index building progress (if building index)
+  index_current_session: number;
+  index_total_sessions: number;
+  index_progress: number;
   // Training completion info (shown after training completes)
   last_training_completed: boolean;
   last_training_best_loss: number;
   last_training_epochs: number;
+}
+
+export interface IndexBuildingStatus {
+  is_building: boolean;
+  current_session: number;
+  total_sessions: number;
+  progress: number;
+  message: string;
+}
+
+export interface GenerationStatus {
+  is_generating: boolean;
+  current_session: string | null;
+  progress: number;
+  message: string;
 }
 
 // File Listing Types
@@ -286,4 +330,21 @@ export interface MineSessionResponse {
   graph_data: EdgeGraphDataPoint[];
   edge_table: BarEdgeData[];
   message: string;
+}
+
+// MMLC Dev Types
+export interface DevSessionResponse {
+  pair: string;
+  date: string;
+  session: string;
+  timeframe: string;
+  candles: CandleData[];
+  total_bars: number;
+}
+
+export interface DevRunResponse {
+  waves: WaveData[];
+  start_bar: number;
+  end_bar: number;
+  bars_processed: number;
 }

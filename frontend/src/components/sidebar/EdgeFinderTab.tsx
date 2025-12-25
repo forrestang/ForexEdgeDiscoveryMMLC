@@ -108,6 +108,8 @@ export function EdgeFinderTab({
         return { icon: Brain, color: 'text-yellow-500', text: 'Training in Progress', animate: true }
       case 'building_index':
         return { icon: RefreshCw, color: 'text-blue-500', text: 'Building Index', animate: true }
+      case 'loading':
+        return { icon: Loader2, color: 'text-purple-500', text: 'Loading Model & Index', animate: true }
       case 'checking':
         return { icon: AlertCircle, color: 'text-yellow-500', text: status.message, animate: false }
       case 'error':
@@ -173,13 +175,45 @@ export function EdgeFinderTab({
             <div className="space-y-2">
               <div className="w-full bg-secondary rounded-full h-2">
                 <div
-                  className="bg-primary h-2 rounded-full transition-all"
+                  className="bg-yellow-500 h-2 rounded-full transition-all"
                   style={{ width: `${(status.training_epoch / status.training_total_epochs) * 100}%` }}
                 />
               </div>
               <div className="flex justify-between text-xs text-muted-foreground">
-                <span>Epoch {status.training_epoch}/{status.training_total_epochs}</span>
+                <span>Training: Epoch {status.training_epoch}/{status.training_total_epochs}</span>
                 <span>Loss: {status.training_loss.toFixed(4)}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Index Building Progress */}
+          {status?.status === 'building_index' && (
+            <div className="space-y-2">
+              <div className="w-full bg-secondary rounded-full h-2">
+                <div
+                  className="bg-blue-500 h-2 rounded-full transition-all"
+                  style={{ width: `${(status.index_progress || 0) * 100}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-xs text-muted-foreground">
+                <span>Building index: {status.index_current_session || 0}/{status.index_total_sessions || 0} sessions</span>
+                <span>{Math.round((status.index_progress || 0) * 100)}%</span>
+              </div>
+            </div>
+          )}
+
+          {/* Loading Progress */}
+          {status?.status === 'loading' && (
+            <div className="space-y-2">
+              <div className="w-full bg-secondary rounded-full h-2">
+                <div
+                  className="bg-purple-500 h-2 rounded-full transition-all"
+                  style={{ width: `${(status.index_progress || 0) * 100}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-xs text-muted-foreground">
+                <span>{status.message || 'Loading...'}</span>
+                <span>{Math.round((status.index_progress || 0) * 100)}%</span>
               </div>
             </div>
           )}
@@ -196,6 +230,24 @@ export function EdgeFinderTab({
                 <Square className="mr-2 h-4 w-4" />
                 Stop Training
               </Button>
+            ) : status?.status === 'building_index' ? (
+              <Button
+                variant="outline"
+                className="w-full"
+                disabled={true}
+              >
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Building Index...
+              </Button>
+            ) : status?.status === 'loading' ? (
+              <Button
+                variant="outline"
+                className="w-full"
+                disabled={true}
+              >
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Loading...
+              </Button>
             ) : status?.status === 'ready' ? (
               <Button
                 variant="outline"
@@ -210,7 +262,7 @@ export function EdgeFinderTab({
               <Button
                 className="w-full"
                 onClick={() => handleSetup(false)}
-                disabled={autoSetupMutation.isPending || status?.status === 'training'}
+                disabled={autoSetupMutation.isPending || status?.status === 'training' || status?.status === 'building_index' || status?.status === 'loading'}
               >
                 {autoSetupMutation.isPending ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />

@@ -52,10 +52,14 @@ class StreamingWaveformEngine:
         self._wave_start_bars = {}
 
     def process_session_with_snapshots(
-        self, df: pl.DataFrame
+        self, df: pl.DataFrame, debug_bar_index: int = -1
     ) -> tuple[list[Wave], list[StackSnapshot]]:
         """
         Process entire session and return waves + snapshots at every bar.
+
+        Args:
+            df: DataFrame with OHLC data
+            debug_bar_index: If >= 0, print debug output for this specific bar
 
         Returns:
             tuple: (waves, snapshots) where:
@@ -63,6 +67,7 @@ class StreamingWaveformEngine:
                 - snapshots: List of StackSnapshot, one per bar
         """
         self.reset()
+        self._debug_bar_index = debug_bar_index
 
         candles = self._df_to_candles(df)
         if not candles:
@@ -191,27 +196,61 @@ class StreamingWaveformEngine:
         ts = candle.timestamp
         current = self._wave_stack[-1]
 
+        # Debug logging for the specified bar (set via debug_bar_index parameter)
+        debug_bar = self._bar_index == getattr(self, '_debug_bar_index', -1)
+        if debug_bar:
+            print(f"\n=== DEBUG BAR {self._bar_index} ===")
+            print(f"Candle: O={candle.open:.5f} H={candle.high:.5f} L={candle.low:.5f} C={candle.close:.5f}")
+            print(f"Is bullish: {candle.is_bullish}")
+            print(f"Current wave stack ({len(self._wave_stack)} waves):")
+            for w in self._wave_stack:
+                dir_str = 'UP' if w.direction == Direction.UP else 'DOWN'
+                print(f"  L{w.level} {dir_str} start={w.start_price:.5f} end={w.end_price:.5f}")
+
         # Detect outside bar: breaks BOTH the current wave's start AND extends past its end
         if current.direction == Direction.UP:
             is_outside = (l < current.start_price) and (h > current.end_price)
         else:
             is_outside = (h > current.start_price) and (l < current.end_price)
 
+        if debug_bar:
+            dir_str = 'UP' if current.direction == Direction.UP else 'DOWN'
+            print(f"Outside bar check for L{current.level} {dir_str}:")
+            if current.direction == Direction.UP:
+                print(f"  l < start ({l:.5f} < {current.start_price:.5f}): {l < current.start_price}")
+                print(f"  h > end ({h:.5f} > {current.end_price:.5f}): {h > current.end_price}")
+            else:
+                print(f"  h > start ({h:.5f} > {current.start_price:.5f}): {h > current.start_price}")
+                print(f"  l < end ({l:.5f} < {current.end_price:.5f}): {l < current.end_price}")
+            print(f"  is_outside: {is_outside}")
+
         if is_outside:
             # Handle outside bar atomically to prevent double-erasure
-            self._process_outside_bar(candle)
+            if debug_bar:
+                print(f"Processing as OUTSIDE BAR")
+            self._process_outside_bar(candle, debug_bar)
         else:
             # Normal processing: determine tick simulation order based on bar type
             if candle.is_bullish or candle.close == candle.open:
                 # Bullish or neutral: Low first, then High
-                self._process_tick(l, ts)
-                self._process_tick(h, ts)
+                if debug_bar:
+                    print(f"Processing as NORMAL BULLISH: LOW({l:.5f}) then HIGH({h:.5f})")
+                self._process_tick(l, ts, debug_bar)
+                self._process_tick(h, ts, debug_bar)
             else:
                 # Bearish: High first, then Low
-                self._process_tick(h, ts)
-                self._process_tick(l, ts)
+                if debug_bar:
+                    print(f"Processing as NORMAL BEARISH: HIGH({h:.5f}) then LOW({l:.5f})")
+                self._process_tick(h, ts, debug_bar)
+                self._process_tick(l, ts, debug_bar)
 
-    def _process_outside_bar(self, candle: Candle):
+        if debug_bar:
+            print(f"After processing, wave stack ({len(self._wave_stack)} waves):")
+            for w in self._wave_stack:
+                dir_str = 'UP' if w.direction == Direction.UP else 'DOWN'
+                print(f"  L{w.level} {dir_str} start={w.start_price:.5f} end={w.end_price:.5f} active={w.is_active}")
+
+    def _process_outside_bar(self, candle: Candle, debug_bar: bool = False):
         """
         Handle outside bar atomically - prevents double-erasure.
 
@@ -227,59 +266,97 @@ class StreamingWaveformEngine:
 
         if candle.is_bullish or candle.close == candle.open:
             # Bullish outside bar: Low first, then High
-            self._process_tick(l, ts)
+            if debug_bar:
+                print(f"  Outside bar BULLISH: process LOW({l:.5f}) normal, then HIGH({h:.5f}) extend_only")
+            self._process_tick(l, ts, debug_bar)
             # After processing low, only allow HIGH to extend (not erase)
-            self._process_tick_extend_only(h, ts)
+            self._process_tick_extend_only(h, ts, debug_bar)
         else:
             # Bearish outside bar: High first, then Low
-            self._process_tick(h, ts)
+            if debug_bar:
+                print(f"  Outside bar BEARISH: process HIGH({h:.5f}) normal, then LOW({l:.5f}) extend_only")
+            self._process_tick(h, ts, debug_bar)
             # After processing high, only allow LOW to extend (not erase)
-            self._process_tick_extend_only(l, ts)
+            self._process_tick_extend_only(l, ts, debug_bar)
 
-    def _process_tick_extend_only(self, price: float, ts: datetime):
+    def _process_tick_extend_only(self, price: float, ts: datetime, debug_bar: bool = False):
         """
-        Process a tick that can only extend or spawn children, never erase.
-        Used for the second tick of an outside bar to prevent double-erasure.
+        Process a tick that can extend, spawn children, or erase ONLY the deepest wave.
+        Used for the second tick of an outside bar to prevent cascading double-erasure.
+
+        Key difference from _process_tick: After erasing the deepest wave, we do NOT
+        cascade erasure to parent waves. This prevents the double-erasure scenario
+        while still allowing the necessary single erasure.
         """
         if not self._wave_stack:
             return
 
         current = self._wave_stack[-1]
+        dir_str = 'UP' if current.direction == Direction.UP else 'DOWN'
+
+        if debug_bar:
+            print(f"    _process_tick_extend_only(price={price:.5f})")
+            print(f"      Current: L{current.level} {dir_str} start={current.start_price:.5f} end={current.end_price:.5f}")
 
         if current.direction == Direction.UP:
             if price > current.end_price:
                 # Extension - allowed
+                if debug_bar:
+                    print(f"      Action: EXTEND (price > end)")
                 current.end_price = price
                 current.end_time = ts
                 self._propagate_extreme_to_l1(current)
                 # Note: we still check parent erasure for extensions
                 self._check_parent_erasure(price, ts)
-            elif price < current.end_price and price >= current.start_price:
-                # Spawn child - allowed (doesn't break start)
-                self._spawn_child(Direction.DOWN, current.end_price, current.end_time, price, ts)
-            # If price < start_price, do nothing (would cause erasure, which we're preventing)
+            elif price < current.end_price:
+                if price < current.start_price:
+                    # Erasure of deepest wave - allowed, but NO cascade
+                    if debug_bar:
+                        print(f"      Action: ERASE_NO_CASCADE (price < start)")
+                    self._erase_wave_no_cascade(current, price, ts)
+                else:
+                    # Spawn child - allowed (doesn't break start)
+                    if debug_bar:
+                        print(f"      Action: SPAWN_CHILD DOWN (price < end but >= start)")
+                    self._spawn_child(Direction.DOWN, current.end_price, current.end_time, price, ts)
         else:  # DOWN
             if price < current.end_price:
                 # Extension - allowed
+                if debug_bar:
+                    print(f"      Action: EXTEND (price < end)")
                 current.end_price = price
                 current.end_time = ts
                 self._propagate_extreme_to_l1(current)
                 self._check_parent_erasure(price, ts)
-            elif price > current.end_price and price <= current.start_price:
-                # Spawn child - allowed (doesn't break start)
-                self._spawn_child(Direction.UP, current.end_price, current.end_time, price, ts)
-            # If price > start_price, do nothing (would cause erasure, which we're preventing)
+            elif price > current.end_price:
+                if price > current.start_price:
+                    # Erasure of deepest wave - allowed, but NO cascade
+                    if debug_bar:
+                        print(f"      Action: ERASE_NO_CASCADE (price > start)")
+                    self._erase_wave_no_cascade(current, price, ts)
+                else:
+                    # Spawn child - allowed (doesn't break start)
+                    if debug_bar:
+                        print(f"      Action: SPAWN_CHILD UP (price > end but <= start)")
+                    self._spawn_child(Direction.UP, current.end_price, current.end_time, price, ts)
 
-    def _process_tick(self, price: float, ts: datetime):
+    def _process_tick(self, price: float, ts: datetime, debug_bar: bool = False):
         """Process a single simulated tick price."""
         if not self._wave_stack:
             return
 
         current = self._wave_stack[-1]
+        dir_str = 'UP' if current.direction == Direction.UP else 'DOWN'
+
+        if debug_bar:
+            print(f"    _process_tick(price={price:.5f})")
+            print(f"      Current: L{current.level} {dir_str} start={current.start_price:.5f} end={current.end_price:.5f}")
 
         if current.direction == Direction.UP:
             if price > current.end_price:
                 # Extension
+                if debug_bar:
+                    print(f"      Action: EXTEND (price > end)")
                 current.end_price = price
                 current.end_time = ts
                 self._propagate_extreme_to_l1(current)
@@ -287,13 +364,19 @@ class StreamingWaveformEngine:
             elif price < current.end_price:
                 if price < current.start_price:
                     # Erasure
+                    if debug_bar:
+                        print(f"      Action: ERASE (price < start)")
                     self._erase_wave(current, price, ts)
                 else:
                     # Spawn child
+                    if debug_bar:
+                        print(f"      Action: SPAWN_CHILD DOWN (price < end but >= start)")
                     self._spawn_child(Direction.DOWN, current.end_price, current.end_time, price, ts)
         else:  # DOWN
             if price < current.end_price:
                 # Extension
+                if debug_bar:
+                    print(f"      Action: EXTEND (price < end)")
                 current.end_price = price
                 current.end_time = ts
                 self._propagate_extreme_to_l1(current)
@@ -301,9 +384,13 @@ class StreamingWaveformEngine:
             elif price > current.end_price:
                 if price > current.start_price:
                     # Erasure
+                    if debug_bar:
+                        print(f"      Action: ERASE (price > start)")
                     self._erase_wave(current, price, ts)
                 else:
                     # Spawn child
+                    if debug_bar:
+                        print(f"      Action: SPAWN_CHILD UP (price > end but <= start)")
                     self._spawn_child(Direction.UP, current.end_price, current.end_time, price, ts)
 
     def _check_parent_erasure(self, price: float, ts: datetime):
@@ -368,6 +455,49 @@ class StreamingWaveformEngine:
                 self._erase_wave(parent, price, ts)
             elif parent.direction == Direction.DOWN and price > parent.start_price:
                 self._erase_wave(parent, price, ts)
+        else:
+            # No parent - create new L1
+            new_direction = Direction.DOWN if wave.direction == Direction.UP else Direction.UP
+            self._create_wave(
+                level=1,
+                direction=new_direction,
+                start_time=wave.end_time,
+                start_price=wave.end_price,
+                end_time=ts,
+                end_price=price,
+                parent=None,
+            )
+
+    def _erase_wave_no_cascade(self, wave: Wave, price: float, ts: datetime):
+        """
+        Erase a wave and resume parent.
+        Used for outside bar handling - prevents cascading erasure FROM this wave,
+        but still checks if the resulting price breaks grandparent waves.
+        """
+        wave.is_active = False
+
+        if self._wave_stack and self._wave_stack[-1] == wave:
+            self._wave_stack.pop()
+
+        if self._wave_stack:
+            parent = self._wave_stack[-1]
+            # Update parent's end price if the erase price extends it
+            if parent.direction == Direction.UP:
+                if price > parent.end_price:
+                    parent.end_price = price
+                    parent.end_time = ts
+                    self._propagate_extreme_to_l1(parent)
+                    # Check if this new price breaks any grandparent waves
+                    self._check_parent_erasure(price, ts)
+            else:
+                if price < parent.end_price:
+                    parent.end_price = price
+                    parent.end_time = ts
+                    self._propagate_extreme_to_l1(parent)
+                    # Check if this new price breaks any grandparent waves
+                    self._check_parent_erasure(price, ts)
+
+            self._propagate_extreme_to_l1(wave)
         else:
             # No parent - create new L1
             new_direction = Direction.DOWN if wave.direction == Direction.UP else Direction.UP

@@ -136,3 +136,46 @@ export function useAdvancedEdgeFinderOpen() {
 export function useKNeighbors() {
   return usePersistedState('kNeighbors', DEFAULT_SETTINGS.kNeighbors)
 }
+
+/**
+ * Current page persistence (main vs mmlc-dev)
+ */
+export type PageType = 'main' | 'mmlc-dev'
+
+export function useCurrentPage() {
+  return usePersistedState<PageType>('currentPage', 'main')
+}
+
+/**
+ * MMLC Dev Sandbox settings persistence
+ */
+export interface MMLCDevSettings {
+  pair: string
+  date: string
+  session: string
+  timeframe: string
+  startBar: number
+  endBar: number
+}
+
+const DEFAULT_MMLC_DEV_SETTINGS: MMLCDevSettings = {
+  pair: '',
+  date: '',
+  session: 'london',
+  timeframe: 'M5',
+  startBar: 0,
+  endBar: 0,
+}
+
+export function useMMLCDevSettings() {
+  const [settings, setSettings] = usePersistedState<MMLCDevSettings>(
+    'mmlcDevSettings',
+    DEFAULT_MMLC_DEV_SETTINGS
+  )
+
+  const updateSettings = (updates: Partial<MMLCDevSettings>) => {
+    setSettings((prev) => ({ ...prev, ...updates }))
+  }
+
+  return { settings, updateSettings }
+}
