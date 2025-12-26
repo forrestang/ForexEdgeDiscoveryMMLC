@@ -494,21 +494,22 @@ class MMLCDevEngine:
                 level_spline_waves = self._build_level_spline_waves(level.level)
                 waves.extend(level_spline_waves)
 
+        # Add close leg (final segment from deepest level's extreme to close price)
+        close_leg = self._build_close_leg(end_bar)
+        if close_leg:
+            waves.append(close_leg)
+
         return waves
 
     def _initialize_first_bar(self, candle: Candle, bar_idx: int) -> None:
         """
         Rule 1: Initialize L1 state on the first bar.
 
-        Step 1: Anchor point at index -1, price = open
-        Step 2: Determine direction from close/open relationship
+        Step 1: Determine direction from close/open relationship
+        Step 2: Check if preswing is needed (skip if open equals the natural starting extreme)
         Step 3: Push swing point (low if UP, high if DOWN)
         """
-        # Step 1: First swing point at index -1 (anchor to the left of bar 0)
-        self.L1_swing_x.append(-1)
-        self.L1_swing_y.append(candle.open)
-
-        # Step 2: Determine L1_Direction from close/open relationship
+        # Step 1: Determine L1_Direction from close/open relationship
         if candle.close > candle.open:
             self.L1_Direction = 1  # UP
         elif candle.close < candle.open:
@@ -523,6 +524,21 @@ class MMLCDevEngine:
             else:
                 # Dead center - default to UP for first bar
                 self.L1_Direction = 1
+
+        # Step 2: Check if we need the artificial preswing at index -1
+        # Skip preswing if:
+        # - UP bar and open == low (bar naturally starts at its low)
+        # - DOWN bar and open == high (bar naturally starts at its high)
+        needs_preswing = True
+        if self.L1_Direction == 1 and candle.open == candle.low:
+            needs_preswing = False
+        elif self.L1_Direction == -1 and candle.open == candle.high:
+            needs_preswing = False
+
+        if needs_preswing:
+            # Add anchor point at index -1, price = open
+            self.L1_swing_x.append(-1)
+            self.L1_swing_y.append(candle.open)
 
         # Step 3: Push swing point based on direction
         if self.L1_Direction == 1:
@@ -1114,6 +1130,98 @@ class MMLCDevEngine:
     def _build_L2_spline_waves(self) -> list[Wave]:
         """Backward compatibility wrapper - delegates to generic method."""
         return self._build_level_spline_waves(2)
+
+    def _build_close_leg(self, end_bar: int) -> Optional[Wave]:
+        """
+        Build a close leg from the deepest level's extreme to the close price.
+
+        This completes the waveform by showing the final retracement to close.
+        Returns None if close is at high or low (no retracement to show).
+        """
+        from datetime import timedelta
+
+        if end_bar < 0 or end_bar >= len(self._candles):
+            print(f"[CLOSE LEG] end_bar out of range: {end_bar}")
+            return None
+
+        candle = self._candles[end_bar]
+        close = candle.close
+
+        import sys
+        print(f"[CLOSE LEG] Bar {end_bar}: close={close}, high={candle.high}, low={candle.low}", file=sys.stderr)
+        print(f"[CLOSE LEG] Levels: {[f'L{l.level}(h={l.high:.5f},l={l.low:.5f},ret={l.has_retracement()})' for l in self.levels]}", file=sys.stderr)
+
+        # Skip if close is at high or low (no retracement to show)
+        if close == candle.high or close == candle.low:
+            print(f"[CLOSE LEG] Skipping - close equals high or low", flush=True)
+            return None
+
+        # Find the deepest level with retracement
+        deepest_level = None
+        for level in reversed(self.levels):
+            if level.has_retracement():
+                deepest_level = level
+                print(f"[CLOSE LEG] Found deepest level: L{level.level}", flush=True)
+                break
+
+        # Fall back to L1 if no level has retracement
+        if deepest_level is None:
+            deepest_level = self.levels[0]
+            print(f"[CLOSE LEG] Fell back to L1", flush=True)
+
+        # Determine the direction of the deepest level
+        # Direction alternates: L1=L1_Dir, L2=-L1_Dir, L3=L1_Dir, L4=-L1_Dir, etc.
+        # For level N: direction = L1_Direction if N is odd, -L1_Direction if N is even
+        if deepest_level.level % 2 == 1:
+            deepest_direction = self.L1_Direction
+        else:
+            deepest_direction = -self.L1_Direction
+
+        # Determine origin point based on deepest level's tracking direction
+        # If deepest is tracking UP (parent DOWN): origin = level's high
+        # If deepest is tracking DOWN (parent UP): origin = level's low
+        if deepest_direction == 1:
+            # Deepest level is UP, so it's tracking highs - origin is the high
+            origin_bar = deepest_level.high_bar
+            origin_price = deepest_level.high
+        else:
+            # Deepest level is DOWN, so it's tracking lows - origin is the low
+            origin_bar = deepest_level.low_bar
+            origin_price = deepest_level.low
+
+        # The close leg is the NEXT level after deepest
+        close_leg_level = deepest_level.level + 1
+
+        # Calculate timestamps
+        origin_time = self._candles[min(origin_bar, len(self._candles) - 1)].timestamp
+
+        # End time is slightly after the last bar (like the anchor swing at bar -1)
+        if len(self._candles) >= 2:
+            interval = self._candles[1].timestamp - self._candles[0].timestamp
+        else:
+            interval = timedelta(minutes=10)
+        end_time = candle.timestamp + interval
+
+        # Determine direction from price movement
+        if close > origin_price:
+            direction = Direction.UP
+        else:
+            direction = Direction.DOWN
+
+        print(f"[CLOSE LEG] Creating: L{close_leg_level} from {origin_price:.5f} to {close:.5f}", flush=True)
+
+        return Wave(
+            id=9000,  # Unique ID for close leg
+            level=close_leg_level,
+            direction=direction,
+            start_time=origin_time,
+            start_price=origin_price,
+            end_time=end_time,
+            end_price=close,
+            parent_id=None,
+            is_active=True,
+            is_spline=False,
+        )
 
     # ================================================================
     # HELPER METHODS

@@ -164,6 +164,13 @@ async def run_dev_engine(
     engine = MMLCDevEngine()
     waves = engine.process_session(candles, start_bar, end_bar, mode=mode)
 
+    # Debug: Check if close leg is present
+    close_leg = [w for w in waves if w.id == 9000]
+    print(f"[API] Total waves: {len(waves)}, close leg present: {len(close_leg) > 0}")
+    if close_leg:
+        w = close_leg[0]
+        print(f"[API] Close leg: L{w.level} {w.start_price:.5f} -> {w.end_price:.5f}")
+
     # Convert waves to response format
     wave_data = []
     for wave in waves:
