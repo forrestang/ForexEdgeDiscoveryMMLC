@@ -55,6 +55,48 @@ class DevWave:
         )
 
 
+@dataclass
+class WaveLevel:
+    """
+    State for a single wave level (L1, L2, L3, etc.).
+
+    Each level tracks:
+    - Current extremes (high/low)
+    - Origin point (where this level's tracking started)
+    - Completed waves (historical retracements)
+    - Spline segments (for intermediate visualization)
+    """
+    level: int                  # 1, 2, 3, etc.
+    direction: int = 0          # -1=DOWN, 0=NEUTRAL, +1=UP
+    high: float = 0.0           # Current highest price
+    low: float = 0.0            # Current lowest price
+    high_bar: int = 0           # Bar index where high occurred
+    low_bar: int = 0            # Bar index where low occurred
+    origin_bar: int = 0         # Start bar of current wave
+    origin_price: float = 0.0   # Start price of current wave
+    # Completed waves: [(origin_bar, origin_price, end_bar, end_price), ...]
+    completed_waves: list = field(default_factory=list)
+    # Spline segments for intermediate visualization
+    spline_segments: list = field(default_factory=list)
+    # For L1 only: swing point arrays
+    swing_x: list = field(default_factory=list)  # Bar indices
+    swing_y: list = field(default_factory=list)  # Prices
+
+    def reset(self, bar_idx: int, origin_price: float, direction: int) -> None:
+        """Reset this level to a new origin point."""
+        self.high = origin_price
+        self.low = origin_price
+        self.high_bar = bar_idx
+        self.low_bar = bar_idx
+        self.origin_bar = bar_idx
+        self.origin_price = origin_price
+        self.direction = direction
+
+    def has_retracement(self) -> bool:
+        """Check if this level has any retracement (high != low)."""
+        return self.low < self.high
+
+
 class MMLCDevEngine:
     """
     Development engine for iterating on MMLC logic.
@@ -68,41 +110,302 @@ class MMLCDevEngine:
         self._wave_id_counter: int = 0
         self._candles: list[Candle] = []
 
-        # L1 State Variables
-        self.L1_Direction: int = 0  # -1=DOWN, 0=NEUTRAL, +1=UP
-        self.L1_High: float = 0.0
-        self.L1_Low: float = 0.0
-        self.L1_High_bar: int = 0  # Bar index where L1_High occurred
-        self.L1_Low_bar: int = 0   # Bar index where L1_Low occurred
+        # Wave levels - dynamic list that can grow to L3, L4, etc.
+        # Index 0 = L1, Index 1 = L2, etc.
+        self.levels: list[WaveLevel] = [
+            WaveLevel(level=1),  # L1
+            WaveLevel(level=2),  # L2
+        ]
 
-        # L1 Swing Point Arrays (x=bar index, y=price)
-        self.L1_swing_x: list[int] = []
-        self.L1_swing_y: list[float] = []
+        # ================================================================
+        # BACKWARD COMPATIBILITY PROPERTIES
+        # These map old variable names to the new levels structure.
+        # Will be removed once all code is refactored.
+        # ================================================================
 
-        # Spline mode: track all intermediate developing leg segments
-        # Each segment is (origin_bar, origin_price, end_bar, end_price)
-        self.L1_spline_segments: list[tuple[int, float, int, float]] = []
+    # L1 backward compatibility properties
+    @property
+    def L1_Direction(self) -> int:
+        return self.levels[0].direction
 
-        # L2 State Variables
-        self.L1_pullback: bool = False  # True when L1 is not making new extreme
-        self.L2_High: float = 0.0
-        self.L2_Low: float = 0.0
-        self.L2_High_bar: int = 0
-        self.L2_Low_bar: int = 0
-        self.L2_origin_bar: int = 0      # Bar where current L2 started
-        self.L2_origin_price: float = 0.0  # Price where current L2 started
+    @L1_Direction.setter
+    def L1_Direction(self, value: int):
+        self.levels[0].direction = value
 
-        # L2 Completed Waves - each is (origin_bar, origin_price, end_bar, end_price)
-        # Only stores waves where actual retracement occurred
-        self.L2_completed_waves: list[tuple[int, float, int, float]] = []
+    @property
+    def L1_High(self) -> float:
+        return self.levels[0].high
 
-        # L2 Spline segments
-        self.L2_spline_segments: list[tuple[int, float, int, float]] = []
+    @L1_High.setter
+    def L1_High(self, value: float):
+        self.levels[0].high = value
+
+    @property
+    def L1_Low(self) -> float:
+        return self.levels[0].low
+
+    @L1_Low.setter
+    def L1_Low(self, value: float):
+        self.levels[0].low = value
+
+    @property
+    def L1_High_bar(self) -> int:
+        return self.levels[0].high_bar
+
+    @L1_High_bar.setter
+    def L1_High_bar(self, value: int):
+        self.levels[0].high_bar = value
+
+    @property
+    def L1_Low_bar(self) -> int:
+        return self.levels[0].low_bar
+
+    @L1_Low_bar.setter
+    def L1_Low_bar(self, value: int):
+        self.levels[0].low_bar = value
+
+    @property
+    def L1_swing_x(self) -> list:
+        return self.levels[0].swing_x
+
+    @L1_swing_x.setter
+    def L1_swing_x(self, value: list):
+        self.levels[0].swing_x = value
+
+    @property
+    def L1_swing_y(self) -> list:
+        return self.levels[0].swing_y
+
+    @L1_swing_y.setter
+    def L1_swing_y(self, value: list):
+        self.levels[0].swing_y = value
+
+    @property
+    def L1_spline_segments(self) -> list:
+        return self.levels[0].spline_segments
+
+    @L1_spline_segments.setter
+    def L1_spline_segments(self, value: list):
+        self.levels[0].spline_segments = value
+
+    # L2 backward compatibility properties
+    @property
+    def L2_High(self) -> float:
+        return self.levels[1].high
+
+    @L2_High.setter
+    def L2_High(self, value: float):
+        self.levels[1].high = value
+
+    @property
+    def L2_Low(self) -> float:
+        return self.levels[1].low
+
+    @L2_Low.setter
+    def L2_Low(self, value: float):
+        self.levels[1].low = value
+
+    @property
+    def L2_High_bar(self) -> int:
+        return self.levels[1].high_bar
+
+    @L2_High_bar.setter
+    def L2_High_bar(self, value: int):
+        self.levels[1].high_bar = value
+
+    @property
+    def L2_Low_bar(self) -> int:
+        return self.levels[1].low_bar
+
+    @L2_Low_bar.setter
+    def L2_Low_bar(self, value: int):
+        self.levels[1].low_bar = value
+
+    @property
+    def L2_origin_bar(self) -> int:
+        return self.levels[1].origin_bar
+
+    @L2_origin_bar.setter
+    def L2_origin_bar(self, value: int):
+        self.levels[1].origin_bar = value
+
+    @property
+    def L2_origin_price(self) -> float:
+        return self.levels[1].origin_price
+
+    @L2_origin_price.setter
+    def L2_origin_price(self, value: float):
+        self.levels[1].origin_price = value
+
+    @property
+    def L2_completed_waves(self) -> list:
+        return self.levels[1].completed_waves
+
+    @L2_completed_waves.setter
+    def L2_completed_waves(self, value: list):
+        self.levels[1].completed_waves = value
+
+    @property
+    def L2_spline_segments(self) -> list:
+        return self.levels[1].spline_segments
+
+    @L2_spline_segments.setter
+    def L2_spline_segments(self, value: list):
+        self.levels[1].spline_segments = value
 
     def _next_wave_id(self) -> int:
         """Get next unique wave ID."""
         self._wave_id_counter += 1
         return self._wave_id_counter
+
+    # ================================================================
+    # GENERIC LEVEL METHODS
+    # These work with any level (L1, L2, L3, etc.)
+    # ================================================================
+
+    def _get_level(self, level_num: int) -> Optional[WaveLevel]:
+        """Get a level by number (1-indexed). Returns None if not exists."""
+        idx = level_num - 1
+        if 0 <= idx < len(self.levels):
+            return self.levels[idx]
+        return None
+
+    def _ensure_level_exists(self, level_num: int) -> WaveLevel:
+        """Ensure a level exists, creating it if necessary."""
+        idx = level_num - 1
+        while len(self.levels) <= idx:
+            new_level_num = len(self.levels) + 1
+            self.levels.append(WaveLevel(level=new_level_num))
+        return self.levels[idx]
+
+    def _complete_and_reset_level(
+        self,
+        level_num: int,
+        bar_idx: int,
+        new_origin_price: float,
+        parent_direction: int
+    ) -> None:
+        """
+        Complete current wave for level N and reset to new origin.
+        Called when parent level makes a new extreme.
+
+        Args:
+            level_num: The level to reset (2 for L2, 3 for L3, etc.)
+            bar_idx: Current bar index
+            new_origin_price: Price at the new origin (parent's new extreme)
+            parent_direction: Parent level's direction (+1=UP, -1=DOWN)
+        """
+        level = self._ensure_level_exists(level_num)
+
+        # Check if there was retracement in the current wave
+        if level.has_retracement():
+            # Store completed wave: origin → retracement endpoint
+            # Direction is opposite to parent
+            if parent_direction == 1:
+                # Parent UP, this level retraces DOWN → track lows
+                level.completed_waves.append((
+                    level.origin_bar, level.origin_price,
+                    level.low_bar, level.low
+                ))
+            else:
+                # Parent DOWN, this level retraces UP → track highs
+                level.completed_waves.append((
+                    level.origin_bar, level.origin_price,
+                    level.high_bar, level.high
+                ))
+
+        # Reset level to new origin
+        # Child direction is opposite to parent
+        child_direction = -parent_direction
+        level.reset(bar_idx, new_origin_price, child_direction)
+
+        # Cascade: also reset the next level (L3 when L2 resets, etc.)
+        # But only if next level exists and had tracking
+        next_level = self._get_level(level_num + 1)
+        if next_level is not None and next_level.has_retracement():
+            self._complete_and_reset_level(
+                level_num + 1,
+                bar_idx,
+                new_origin_price,
+                child_direction
+            )
+
+    def _update_level_pullback(
+        self,
+        level_num: int,
+        candle: Candle,
+        bar_idx: int,
+        parent_direction: int
+    ) -> bool:
+        """
+        Update level N during parent's pullback (when parent not making new extreme).
+        Returns True if this level made a new extreme (triggering child cascade).
+
+        Args:
+            level_num: The level to update (2 for L2, 3 for L3, etc.)
+            candle: Current candle
+            bar_idx: Current bar index
+            parent_direction: Parent level's direction (+1=UP, -1=DOWN)
+
+        Returns:
+            True if this level made a new extreme
+        """
+        level = self._ensure_level_exists(level_num)
+        made_new_extreme = False
+
+        if parent_direction == 1:
+            # Parent UP → this level retraces DOWN → track lower lows
+            if candle.high <= level.high and candle.low < level.low:
+                level.low = candle.low
+                level.low_bar = bar_idx
+                made_new_extreme = True
+
+                # Track spline segment for visualization
+                if self._mode == "spline":
+                    level.spline_segments.append((
+                        level.origin_bar, level.origin_price,
+                        bar_idx, candle.low
+                    ))
+        else:
+            # Parent DOWN → this level retraces UP → track higher highs
+            if candle.low >= level.low and candle.high > level.high:
+                level.high = candle.high
+                level.high_bar = bar_idx
+                made_new_extreme = True
+
+                # Track spline segment for visualization
+                if self._mode == "spline":
+                    level.spline_segments.append((
+                        level.origin_bar, level.origin_price,
+                        bar_idx, candle.high
+                    ))
+
+        # If this level made a new extreme, reset child level
+        if made_new_extreme:
+            # Ensure next level exists (auto-creates L3 when L2 makes extreme, etc.)
+            self._ensure_level_exists(level_num + 1)
+            # Child direction is opposite to this level's retracement direction
+            child_parent_dir = -parent_direction  # This level's direction
+            self._complete_and_reset_level(
+                level_num + 1,
+                bar_idx,
+                candle.low if parent_direction == 1 else candle.high,
+                child_parent_dir
+            )
+        else:
+            # This level didn't make new extreme = this level is pulling back
+            # Let child level track its own retracement (recursive cascade)
+            child_level = self._get_level(level_num + 1)
+            if child_level is not None:
+                child_parent_dir = -parent_direction  # This level's direction
+                self._update_level_pullback(
+                    level_num + 1,
+                    candle,
+                    bar_idx,
+                    child_parent_dir
+                )
+
+        return made_new_extreme
 
     def process_session(
         self,
@@ -128,26 +431,11 @@ class MMLCDevEngine:
         self._wave_id_counter = 0
         self._mode = mode
 
-        # Reset L1 state
-        self.L1_Direction = 0
-        self.L1_High = 0.0
-        self.L1_Low = 0.0
-        self.L1_High_bar = 0
-        self.L1_Low_bar = 0
-        self.L1_swing_x = []
-        self.L1_swing_y = []
-        self.L1_spline_segments = []
-
-        # Reset L2 state
-        self.L1_pullback = False
-        self.L2_High = 0.0
-        self.L2_Low = 0.0
-        self.L2_High_bar = 0
-        self.L2_Low_bar = 0
-        self.L2_origin_bar = 0
-        self.L2_origin_price = 0.0
-        self.L2_completed_waves = []
-        self.L2_spline_segments = []
+        # Reset all wave levels
+        self.levels = [
+            WaveLevel(level=1),  # L1
+            WaveLevel(level=2),  # L2
+        ]
 
         if end_bar is None:
             end_bar = len(candles) - 1
@@ -176,23 +464,35 @@ class MMLCDevEngine:
         # Add developing leg: from last swing point to current extreme
         self._add_developing_leg(end_bar)
 
-        # Track count of historical L2s before adding developing leg
-        historical_l2_count = len(self.L2_completed_waves)
-        self._add_developing_leg_L2(end_bar)
+        # Track historical counts per level BEFORE adding developing legs
+        historical_counts = {level.level: len(level.completed_waves) for level in self.levels}
 
-        # Convert swing points to Wave objects for display
+        # Add developing legs for all levels >= 2
+        # Parent direction alternates: L1_Dir for L2, -L1_Dir for L3, L1_Dir for L4, etc.
+        parent_dir = self.L1_Direction
+        for level in self.levels[1:]:  # Skip L1
+            self._add_developing_leg_level(level.level, parent_dir)
+            parent_dir = -parent_dir  # Flip for next level
+
+        # Convert L1 swing points to Wave objects for display
         waves = self._build_waves()
 
-        # Add L2 waves (pass historical count to separate developing from historical)
-        l2_waves = self._build_L2_waves(historical_l2_count)
-        waves.extend(l2_waves)
+        # Add waves for all levels >= 2
+        for level in self.levels[1:]:
+            level_waves = self._build_level_waves(
+                level.level,
+                historical_counts.get(level.level, 0)
+            )
+            waves.extend(level_waves)
 
-        # In spline mode, add spline waves (intermediate developing legs)
+        # In spline mode, add spline waves for all levels
         if self._mode == "spline":
-            spline_waves = self._build_spline_waves()
+            spline_waves = self._build_spline_waves()  # L1 splines
             waves.extend(spline_waves)
-            l2_spline_waves = self._build_L2_spline_waves()
-            waves.extend(l2_spline_waves)
+            # Add splines for all levels >= 2
+            for level in self.levels[1:]:
+                level_spline_waves = self._build_level_spline_waves(level.level)
+                waves.extend(level_spline_waves)
 
         return waves
 
@@ -480,67 +780,28 @@ class MMLCDevEngine:
         Complete current L2 wave (if there was retracement) and reset L2 to new origin.
 
         Called when L1 makes a new extreme (continuation, reversal, or outside bar).
+        Now delegates to the generic _complete_and_reset_level method.
         """
-        # Check if there was retracement in the current L2
-        # UP direction: retracement means L2_Low < L2_High (pulled back from high)
-        # DOWN direction: retracement means L2_High > L2_Low (rallied from low)
-        had_retracement = (self.L2_Low < self.L2_High)
-
-        if had_retracement:
-            # Store completed L2 wave: origin → retracement endpoint
-            if self.L1_Direction == 1:
-                # Was UP, L2 tracked pullback lows
-                self.L2_completed_waves.append((
-                    self.L2_origin_bar, self.L2_origin_price,
-                    self.L2_Low_bar, self.L2_Low
-                ))
-            else:
-                # Was DOWN, L2 tracked pullback highs
-                self.L2_completed_waves.append((
-                    self.L2_origin_bar, self.L2_origin_price,
-                    self.L2_High_bar, self.L2_High
-                ))
-
-        # Reset L2 to new origin
-        self.L2_High = new_l2_origin_price
-        self.L2_Low = new_l2_origin_price
-        self.L2_High_bar = bar_idx
-        self.L2_Low_bar = bar_idx
-        self.L2_origin_bar = bar_idx
-        self.L2_origin_price = new_l2_origin_price
+        # Delegate to generic method, which handles L2 and cascades to L3+
+        self._complete_and_reset_level(
+            level_num=2,
+            bar_idx=bar_idx,
+            new_origin_price=new_l2_origin_price,
+            parent_direction=self.L1_Direction
+        )
 
     def _update_L2_pullback(self, candle: Candle, bar_idx: int) -> None:
         """
         Update L2 during pullback (when L1 is not making a new extreme).
-
-        UP direction: Track lower lows (L2_Low)
-        DOWN direction: Track higher highs (L2_High)
+        Now delegates to the generic _update_level_pullback method.
         """
-        if self.L1_Direction == 1:
-            # UP direction pullback: track lower lows
-            # Condition: High <= L2_High AND Low < L2_Low
-            if candle.high <= self.L2_High and candle.low < self.L2_Low:
-                # Track spline segment for L2 (from origin to new low)
-                if self._mode == "spline":
-                    self.L2_spline_segments.append((
-                        self.L2_origin_bar, self.L2_origin_price,
-                        bar_idx, candle.low
-                    ))
-                self.L2_Low = candle.low
-                self.L2_Low_bar = bar_idx
-
-        elif self.L1_Direction == -1:
-            # DOWN direction pullback: track higher highs
-            # Condition: Low >= L2_Low AND High > L2_High
-            if candle.low >= self.L2_Low and candle.high > self.L2_High:
-                # Track spline segment for L2 (from origin to new high)
-                if self._mode == "spline":
-                    self.L2_spline_segments.append((
-                        self.L2_origin_bar, self.L2_origin_price,
-                        bar_idx, candle.high
-                    ))
-                self.L2_High = candle.high
-                self.L2_High_bar = bar_idx
+        # Delegate to generic method, which handles L2 and cascades to L3+
+        self._update_level_pullback(
+            level_num=2,
+            candle=candle,
+            bar_idx=bar_idx,
+            parent_direction=self.L1_Direction
+        )
 
     def _add_developing_leg(self, current_bar: int) -> None:
         """
@@ -561,27 +822,36 @@ class MMLCDevEngine:
             self.L1_swing_x.append(self.L1_Low_bar)
             self.L1_swing_y.append(self.L1_Low)
 
-    def _add_developing_leg_L2(self, current_bar: int) -> None:
+    def _add_developing_leg_level(self, level_num: int, parent_direction: int) -> None:
         """
-        Add L2 developing leg from L2 origin to current L2 extreme.
+        Add developing leg for any level (L2, L3, L4, etc.).
 
-        If L1_Direction is UP: L2 retracement goes to L2_Low
-        If L1_Direction is DOWN: L2 retracement goes to L2_High
+        Args:
+            level_num: The level to add developing leg for (2 for L2, etc.)
+            parent_direction: Direction of the parent level (+1=UP, -1=DOWN)
         """
+        level = self._get_level(level_num)
+        if not level:
+            return
+
         # Only add developing leg if there was retracement
-        if self.L2_Low < self.L2_High:
-            if self.L1_Direction == 1:
-                # UP direction: L2 tracks pullback to L2_Low
-                self.L2_completed_waves.append((
-                    self.L2_origin_bar, self.L2_origin_price,
-                    self.L2_Low_bar, self.L2_Low
+        if level.has_retracement():
+            if parent_direction == 1:
+                # Parent UP: this level retraces DOWN, track lows
+                level.completed_waves.append((
+                    level.origin_bar, level.origin_price,
+                    level.low_bar, level.low
                 ))
-            elif self.L1_Direction == -1:
-                # DOWN direction: L2 tracks pullback to L2_High
-                self.L2_completed_waves.append((
-                    self.L2_origin_bar, self.L2_origin_price,
-                    self.L2_High_bar, self.L2_High
+            else:
+                # Parent DOWN: this level retraces UP, track highs
+                level.completed_waves.append((
+                    level.origin_bar, level.origin_price,
+                    level.high_bar, level.high
                 ))
+
+    def _add_developing_leg_L2(self, current_bar: int) -> None:
+        """Backward compatibility wrapper - delegates to generic method."""
+        self._add_developing_leg_level(2, self.L1_Direction)
 
     def _build_waves(self) -> list[Wave]:
         """
@@ -644,41 +914,47 @@ class MMLCDevEngine:
 
         return waves
 
-    def _build_L2_waves(self, historical_l2_count: int) -> list[Wave]:
+    def _build_level_waves(self, level_num: int, historical_count: int) -> list[Wave]:
         """
-        Convert L2 completed waves to Wave objects for display.
-
-        L2 waves show the retracement from each L1 extreme.
-        Each entry in L2_completed_waves is (origin_bar, origin_price, end_bar, end_price).
+        Convert completed waves for any level (L2, L3, L4, etc.) to Wave objects.
 
         Args:
-            historical_l2_count: Number of L2s that were completed before adding developing leg.
-                                 Entries after this index are "developing" L2s.
+            level_num: The level to build waves for (2 for L2, 3 for L3, etc.)
+            historical_count: Number of waves completed before adding developing leg.
+                             Entries after this index are "developing" waves.
 
         Mode behavior:
-        - Complete mode: Only show the developing L2 (if exists). Never show historical L2s.
-        - Spline mode: Show ALL historical L2s as dotted + developing L2 as solid.
+        - Complete mode: Only show the developing wave (if exists). Never show historical.
+        - Spline mode: Show ALL historical as dotted + developing as solid.
         """
         from datetime import timedelta
 
-        waves = []
+        level = self._get_level(level_num)
+        if not level:
+            return []
 
-        if len(self.L2_completed_waves) == 0:
+        waves = []
+        completed = level.completed_waves
+
+        if len(completed) == 0:
             return waves
 
-        # Separate historical L2s from developing L2
-        historical_l2s = self.L2_completed_waves[:historical_l2_count]
-        developing_l2s = self.L2_completed_waves[historical_l2_count:]
+        # Separate historical from developing
+        historical = completed[:historical_count]
+        developing = completed[historical_count:]
+
+        # ID offset: L2=1000+, L3=1500+, L4=2000+, etc.
+        id_offset = level_num * 500
 
         if self._mode == "complete":
-            # Complete mode: Only show developing L2 (solid), no historical
-            waves_to_process = [(i + historical_l2_count, entry, False)
-                                for i, entry in enumerate(developing_l2s)]
+            # Complete mode: Only show developing wave (solid), no historical
+            waves_to_process = [(i + historical_count, entry, False)
+                                for i, entry in enumerate(developing)]
         else:
             # Spline mode: All historical as dotted + developing as solid
-            waves_to_process = [(i, entry, True) for i, entry in enumerate(historical_l2s)]
-            waves_to_process += [(i + historical_l2_count, entry, False)
-                                 for i, entry in enumerate(developing_l2s)]
+            waves_to_process = [(i, entry, True) for i, entry in enumerate(historical)]
+            waves_to_process += [(i + historical_count, entry, False)
+                                 for i, entry in enumerate(developing)]
 
         for actual_idx, (x1, y1, x2, y2), is_spline in waves_to_process:
             # Determine direction from price movement
@@ -707,8 +983,8 @@ class MMLCDevEngine:
                 t2 = self._candles[min(x2, len(self._candles) - 1)].timestamp
 
             wave = Wave(
-                id=500 + actual_idx,  # Offset ID to avoid conflicts with L1
-                level=2,  # L2 level = cyan color
+                id=id_offset + actual_idx,  # Level-based offset to avoid conflicts
+                level=level_num,  # Use actual level number
                 direction=direction,
                 start_time=t1,
                 start_price=y1,
@@ -721,6 +997,10 @@ class MMLCDevEngine:
             waves.append(wave)
 
         return waves
+
+    def _build_L2_waves(self, historical_l2_count: int) -> list[Wave]:
+        """Backward compatibility wrapper - delegates to generic method."""
+        return self._build_level_waves(2, historical_l2_count)
 
     def _build_spline_waves(self) -> list[Wave]:
         """
@@ -757,7 +1037,7 @@ class MMLCDevEngine:
                 direction = Direction.DOWN
 
             wave = Wave(
-                id=1000 + i,  # Offset ID to avoid conflicts
+                id=750 + i,  # L1 spline offset (1*500+250 = 750) to avoid conflicts with L2 waves (1000+)
                 level=1,  # Use level 1 (yellow) for spline waves
                 direction=direction,
                 start_time=origin_time,
@@ -772,21 +1052,31 @@ class MMLCDevEngine:
 
         return waves
 
-    def _build_L2_spline_waves(self) -> list[Wave]:
+    def _build_level_spline_waves(self, level_num: int) -> list[Wave]:
         """
-        Build L2 spline waves - lines from L2 origin to each intermediate retracement.
+        Build spline waves for any level (L2, L3, L4, etc.).
 
-        These show the progression of the L2 retracement as L2_Low/L2_High updates.
+        These show the progression of the retracement as the level's extreme updates.
+
+        Args:
+            level_num: The level to build splines for (2 for L2, 3 for L3, etc.)
         """
         from datetime import timedelta
 
+        level = self._get_level(level_num)
+        if not level:
+            return []
+
         waves = []
 
-        if len(self.L2_spline_segments) == 0:
+        if len(level.spline_segments) == 0:
             return waves
 
+        # Spline ID offset: L2=1250+, L3=1750+, L4=2250+, etc. (midpoint between level ranges)
+        spline_id_offset = level_num * 500 + 250
+
         # Create a wave for each spline segment
-        for i, (origin_bar, origin_price, end_bar, end_price) in enumerate(self.L2_spline_segments):
+        for i, (origin_bar, origin_price, end_bar, end_price) in enumerate(level.spline_segments):
             # Get timestamp for origin point
             if origin_bar < 0:
                 if len(self._candles) >= 2:
@@ -806,8 +1096,8 @@ class MMLCDevEngine:
                 direction = Direction.DOWN
 
             wave = Wave(
-                id=1500 + i,  # Offset ID to avoid conflicts with L1 splines (1000+)
-                level=2,  # L2 level = cyan color
+                id=spline_id_offset + i,  # Level-based spline offset
+                level=level_num,  # Use actual level number
                 direction=direction,
                 start_time=origin_time,
                 start_price=origin_price,
@@ -820,6 +1110,10 @@ class MMLCDevEngine:
             waves.append(wave)
 
         return waves
+
+    def _build_L2_spline_waves(self) -> list[Wave]:
+        """Backward compatibility wrapper - delegates to generic method."""
+        return self._build_level_spline_waves(2)
 
     # ================================================================
     # HELPER METHODS
