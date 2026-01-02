@@ -31,12 +31,47 @@ class DevSessionResponse(BaseModel):
     total_bars: int
 
 
+class StitchAnnotation(BaseModel):
+    """Debug annotation for stitch mode."""
+    bar: int
+    timestamp: str
+    price: float
+    level: int
+    is_high: bool
+    text: str  # e.g., "[1.13045 - 3 bars]"
+
+
+class SwingLabelData(BaseModel):
+    """Swing label for chart annotation."""
+    bar: int
+    timestamp: str
+    price: float
+    is_high: bool
+    child_level: int  # e.g., 2 for L2
+    child_price: float  # Price of the child swing
+    bars_ago: int  # Bars from child swing to this swing
+
+
+class DebugState(BaseModel):
+    """Debug state for wave visualization."""
+    mode: str
+    end_bar: int
+    current_candle: Optional[dict]
+    levels: list[dict]  # All wave levels (L1, L2, L3, etc.) with all their properties
+    stitch_permanent_legs: list[dict]
+    prev_L1_Direction: str
+    num_waves_returned: int
+
+
 class DevRunResponse(BaseModel):
     """Response for running the dev engine."""
     waves: list[WaveData]
     start_bar: int
     end_bar: int
     bars_processed: int
+    annotations: list[StitchAnnotation] = []
+    swing_labels: list[SwingLabelData] = []
+    debug_state: Optional[DebugState] = None
 
 
 @router.get("/session/{pair}", response_model=DevSessionResponse)
@@ -109,7 +144,7 @@ async def run_dev_engine(
     timeframe: TimeframeType = Query("M5", description="Display timeframe"),
     start_bar: int = Query(0, description="First bar to process (0-indexed)"),
     end_bar: Optional[int] = Query(None, description="Last bar to process (inclusive)"),
-    mode: str = Query("complete", description="Display mode: 'complete' or 'spline'"),
+    mode: str = Query("complete", description="Display mode: 'complete', 'spline', or 'stitch'"),
     working_directory: Optional[str] = Query(None),
 ):
     """
@@ -164,13 +199,6 @@ async def run_dev_engine(
     engine = MMLCDevEngine()
     waves = engine.process_session(candles, start_bar, end_bar, mode=mode)
 
-    # Debug: Check if close leg is present
-    close_leg = [w for w in waves if w.id == 9000]
-    print(f"[API] Total waves: {len(waves)}, close leg present: {len(close_leg) > 0}")
-    if close_leg:
-        w = close_leg[0]
-        print(f"[API] Close leg: L{w.level} {w.start_price:.5f} -> {w.end_price:.5f}")
-
     # Convert waves to response format
     wave_data = []
     for wave in waves:
@@ -189,9 +217,46 @@ async def run_dev_engine(
             )
         )
 
+    # Convert stitch annotations if in stitch mode
+    annotations = []
+    if mode == "stitch":
+        for ann in engine.stitch_annotations:
+            annotations.append(
+                StitchAnnotation(
+                    bar=ann['bar'],
+                    timestamp=ann['timestamp'],
+                    price=ann['price'],
+                    level=ann['level'],
+                    is_high=ann['is_high'],
+                    text=ann['text'],
+                )
+            )
+
+    # Convert swing labels
+    swing_labels = []
+    for label in engine.swing_labels:
+        if label.child_level is not None and label.child_price is not None and label.bars_ago is not None:
+            swing_labels.append(
+                SwingLabelData(
+                    bar=label.bar,
+                    timestamp=label.timestamp.isoformat(),
+                    price=label.price,
+                    is_high=label.is_high,
+                    child_level=label.child_level,
+                    child_price=label.child_price,
+                    bars_ago=label.bars_ago,
+                )
+            )
+
+    # Get debug state from engine
+    debug_state = DebugState(**engine.get_debug_state(end_bar))
+
     return DevRunResponse(
         waves=wave_data,
         start_bar=start_bar,
         end_bar=end_bar,
         bars_processed=end_bar - start_bar + 1,
+        annotations=annotations,
+        swing_labels=swing_labels,
+        debug_state=debug_state,
     )

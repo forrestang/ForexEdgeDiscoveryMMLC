@@ -342,9 +342,82 @@ export interface DevSessionResponse {
   total_bars: number;
 }
 
+export interface StitchAnnotation {
+  bar: number;
+  timestamp: string;
+  price: number;
+  level: number;
+  is_high: boolean;
+  text: string;
+}
+
+export interface SwingLabel {
+  bar: number;
+  timestamp: string;
+  price: number;
+  is_high: boolean;
+  child_level: number;
+  child_price: number;
+  bars_ago: number;
+}
+
+export interface DebugSwingPoint {
+  bar: number;
+  price: number;
+}
+
+export interface DebugSplineSegment {
+  start_bar: number;
+  start_price: number;
+  end_bar: number;
+  end_price: number;
+}
+
+export interface DebugStitchLeg {
+  start_bar: number;
+  start_price: number;
+  end_bar: number;
+  end_price: number;
+  direction: string;
+}
+
+export interface DebugCandle {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+export interface DebugLevelData {
+  level: number;
+  direction: string;
+  high: number;
+  high_bar: number;
+  low: number;
+  low_bar: number;
+  origin_bar: number;
+  origin_price: number;
+  completed_waves: DebugSplineSegment[];
+  spline_segments: DebugSplineSegment[];
+  swing_points?: DebugSwingPoint[];  // Only for L1
+}
+
+export interface DebugState {
+  mode: string;
+  end_bar: number;
+  current_candle: DebugCandle | null;
+  levels: DebugLevelData[];
+  stitch_permanent_legs: DebugStitchLeg[];
+  prev_L1_Direction: string;
+  num_waves_returned: number;
+}
+
 export interface DevRunResponse {
   waves: WaveData[];
   start_bar: number;
   end_bar: number;
   bars_processed: number;
+  annotations: StitchAnnotation[];
+  swing_labels: SwingLabel[];
+  debug_state?: DebugState;
 }

@@ -1,12 +1,13 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import { api } from '@/lib/api'
 import { DEFAULT_WORKING_DIRECTORY } from '@/lib/constants'
 import { useMMLCDevSettings } from '@/hooks/usePersistedSettings'
-import { Loader2, Play, RotateCcw, ArrowLeft } from 'lucide-react'
-import type { SessionType, TimeframeType, CandleData, WaveData } from '@/types'
-import type { Data, Layout, Shape } from 'plotly.js'
+import { Loader2, Play, RotateCcw, ArrowLeft, Bug } from 'lucide-react'
+import type { SessionType, TimeframeType, CandleData, WaveData, StitchAnnotation, SwingLabel, DebugState } from '@/types'
+import type Plotly from 'plotly.js'
+import type { Data, Layout, Shape, Annotations } from 'plotly.js'
 
 interface MMLCDevPageProps {
   onBack: () => void
@@ -28,6 +29,8 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
   // Loaded data
   const [candles, setCandles] = useState<CandleData[]>([])
   const [waves, setWaves] = useState<WaveData[]>([])
+  const [annotations, setAnnotations] = useState<StitchAnnotation[]>([])
+  const [swingLabels, setSwingLabels] = useState<SwingLabel[]>([])
   const [totalBars, setTotalBars] = useState(0)
 
   // Bar range - initialized from persisted settings
@@ -35,12 +38,60 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
   const [endBar, setEndBar] = useState(savedSettings.endBar)
 
   // Display mode
-  const [mode, setMode] = useState<'complete' | 'spline'>('complete')
+  const [mode, setMode] = useState<'complete' | 'spline' | 'stitch'>('complete')
+
+  // Debug panel
+  const [debugState, setDebugState] = useState<DebugState | null>(null)
+  const [debugWindowRef, setDebugWindowRef] = useState<Window | null>(null)
+
+  // Clicked bar data box
+  const [clickedBarInfo, setClickedBarInfo] = useState<{
+    timestamp: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    barIndex: number;
+  } | null>(null)
+
+  // Hover position for axis labels
+  const [hoverInfo, setHoverInfo] = useState<{
+    price: number;
+    time: string;
+    yPixel: number;
+    xPixel: number;
+  } | null>(null)
+  const chartContainerRef = useRef<HTMLDivElement>(null)
 
   // Persist settings when they change
   useEffect(() => {
     saveSettings({ pair, date, session, timeframe, startBar, endBar })
   }, [pair, date, session, timeframe, startBar, endBar, saveSettings])
+
+  // Save debug state to localStorage when it changes (for popup window sync)
+  useEffect(() => {
+    if (debugState) {
+      localStorage.setItem('mmlc-debug-state', JSON.stringify(debugState))
+    }
+  }, [debugState])
+
+  // Open debug panel in popup window
+  const openDebugPopup = useCallback(() => {
+    // Check if popup already exists and is open
+    if (debugWindowRef && !debugWindowRef.closed) {
+      debugWindowRef.focus()
+      return
+    }
+    // Open new popup window
+    const popup = window.open(
+      '/?page=debug-panel',
+      'mmlc-debug-panel',
+      'width=500,height=800,left=100,top=100,resizable=yes,scrollbars=yes'
+    )
+    if (popup) {
+      setDebugWindowRef(popup)
+    }
+  }, [debugWindowRef])
 
   // Fetch available pairs
   const { data: pairsData } = useQuery({
@@ -87,6 +138,9 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
     }),
     onSuccess: (data) => {
       setWaves(data.waves)
+      setAnnotations(data.annotations || [])
+      setSwingLabels(data.swing_labels || [])
+      setDebugState(data.debug_state || null)
     },
   })
 
@@ -103,6 +157,94 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
   const handleReset = useCallback(() => {
     setWaves([])
   }, [])
+
+  // Handle chart click to show bar data
+  const handleChartClick = useCallback((event: Readonly<Plotly.PlotMouseEvent>) => {
+    if (event.points && event.points.length > 0) {
+      const point = event.points[0]
+      // Find the candle at this timestamp
+      const timestamp = point.x as string
+      const candleIndex = candles.findIndex(c => c.timestamp === timestamp)
+      if (candleIndex >= 0) {
+        const candle = candles[candleIndex]
+        setClickedBarInfo({
+          timestamp: candle.timestamp,
+          open: candle.open,
+          high: candle.high,
+          low: candle.low,
+          close: candle.close,
+          barIndex: candleIndex,
+        })
+      }
+    }
+  }, [candles])
+
+  // Set up mouse move listener on the plot for axis labels
+  useEffect(() => {
+    const container = chartContainerRef.current
+    if (!container || candles.length === 0) return
+
+    const handleMouseMove = (e: MouseEvent) => {
+      // Find the plotly graph div inside the container
+      const plotlyDiv = container.querySelector('.js-plotly-plot') as HTMLElement & {
+        _fullLayout?: {
+          xaxis: { range: [string, string]; _length: number; _offset: number };
+          yaxis: { range: [number, number]; _length: number; _offset: number };
+          margin: { l: number; r: number; t: number; b: number };
+        };
+      }
+
+      if (!plotlyDiv?._fullLayout) return
+
+      const layout = plotlyDiv._fullLayout
+      const rect = container.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      const y = e.clientY - rect.top
+
+      // Check if mouse is within plot area
+      const plotLeft = layout.margin.l
+      const plotRight = rect.width - layout.margin.r
+      const plotTop = layout.margin.t
+      const plotBottom = rect.height - layout.margin.b
+
+      if (x < plotLeft || x > plotRight || y < plotTop || y > plotBottom) {
+        setHoverInfo(null)
+        return
+      }
+
+      // Convert pixel to data coordinates
+      const xRatio = (x - plotLeft) / (plotRight - plotLeft)
+      const yRatio = 1 - (y - plotTop) / (plotBottom - plotTop)
+
+      const xRange = layout.xaxis.range
+      const yRange = layout.yaxis.range
+
+      const xMin = new Date(xRange[0]).getTime()
+      const xMax = new Date(xRange[1]).getTime()
+      const time = new Date(xMin + xRatio * (xMax - xMin)).toISOString()
+
+      const price = yRange[0] + yRatio * (yRange[1] - yRange[0])
+
+      setHoverInfo({
+        price,
+        time,
+        xPixel: x,
+        yPixel: y,
+      })
+    }
+
+    const handleMouseLeave = () => {
+      setHoverInfo(null)
+    }
+
+    container.addEventListener('mousemove', handleMouseMove)
+    container.addEventListener('mouseleave', handleMouseLeave)
+
+    return () => {
+      container.removeEventListener('mousemove', handleMouseMove)
+      container.removeEventListener('mouseleave', handleMouseLeave)
+    }
+  }, [candles.length])
 
   // Auto-run when bar range or mode changes (only if session is loaded)
   useEffect(() => {
@@ -123,6 +265,7 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
     decreasing: { line: { color: '#ef5350' }, fillcolor: '#ef5350' },
     name: 'Price',
     showlegend: false,
+    hoverinfo: 'none',  // Hide hover popup but keep spike labels
   } : { type: 'scatter', x: [], y: [], mode: 'lines' }
 
   // Prepare waveform traces
@@ -137,8 +280,7 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
       dash: wave.is_spline ? 'dot' : 'solid',
     },
     name: wave.is_spline ? 'Spline' : `L${wave.level}`,
-    hoverinfo: 'text',
-    hovertext: wave.is_spline ? `Spline (${wave.direction})` : `Level ${wave.level} (${wave.direction})`,
+    hoverinfo: 'none',  // Hide hover popup but keep spike labels
     showlegend: false,
   }))
 
@@ -167,6 +309,33 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
     })
   }
 
+  // Convert swing labels to Plotly annotations (compact 2-line format) - stitch mode only
+  // Line 1: child swing price, Line 2: bars ago
+  const swingLabelAnnotations: Partial<Annotations>[] = mode === 'stitch'
+    ? swingLabels
+        .filter((label) => label.child_price !== undefined && label.bars_ago !== undefined)
+        .map((label) => ({
+          x: label.timestamp,
+          y: label.price,
+          xref: 'x' as const,
+          yref: 'y' as const,
+          text: `${label.child_price.toFixed(5)}<br>${label.bars_ago}`,  // Line 1: price, Line 2: bars ago
+          showarrow: false,
+          font: {
+            size: 9,
+            color: '#ffffff',
+            family: 'monospace',
+          },
+          bgcolor: 'transparent',
+          borderpad: 0,
+          xanchor: 'center' as const,
+          yanchor: label.is_high ? 'bottom' : 'top',  // Above highs, below lows
+          yshift: label.is_high ? 8 : -8,  // Offset from price
+        }))
+    : []
+
+  const plotlyAnnotations: Partial<Annotations>[] = swingLabelAnnotations
+
   const layout: Partial<Layout> = {
     title: {
       text: candles.length > 0 ? `MMLC Dev - ${pair} - ${date} (${session}) - ${timeframe}` : 'MMLC Development Sandbox',
@@ -181,18 +350,36 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
       gridcolor: 'hsl(217.2, 32.6%, 17.5%)',
       linecolor: 'hsl(217.2, 32.6%, 17.5%)',
       tickfont: { color: '#9ca3af' },
+      // Spike to axis with label
+      showspikes: true,
+      spikemode: 'toaxis',
+      spikesnap: 'cursor',
+      spikethickness: 1,
+      spikecolor: 'rgba(255, 255, 255, 0.5)',
+      spikedash: 'dot',
     },
     yaxis: {
       autorange: true,
       gridcolor: 'hsl(217.2, 32.6%, 17.5%)',
       linecolor: 'hsl(217.2, 32.6%, 17.5%)',
       tickfont: { color: '#9ca3af' },
+      tickformat: '.5f',  // Always show 5 decimal places
       side: 'right',
+      // Spike to axis with label
+      showspikes: true,
+      spikemode: 'toaxis',
+      spikesnap: 'cursor',
+      spikethickness: 1,
+      spikecolor: 'rgba(255, 255, 255, 0.5)',
+      spikedash: 'dot',
     },
-    margin: { l: 50, r: 60, t: 50, b: 50 },
+    margin: { l: 50, r: 80, t: 50, b: 50 },  // Increased right margin for 5 decimals
     showlegend: false,
-    hovermode: 'x unified',
+    hovermode: 'x' as const,  // Show spike labels on x-axis hover
+    spikedistance: -1,  // Always show spikes regardless of distance
+    hoverdistance: 50,  // Distance threshold for hover
     shapes: rangeShapes,
+    annotations: plotlyAnnotations,
   }
 
   const config = {
@@ -352,6 +539,16 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
                 >
                   Spline
                 </button>
+                <button
+                  onClick={() => setMode('stitch')}
+                  className={`flex-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+                    mode === 'stitch'
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                  }`}
+                >
+                  Stitch
+                </button>
               </div>
 
               <div className="flex gap-2">
@@ -375,6 +572,16 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
                   Reset
                 </button>
               </div>
+
+              {/* Debug Button - Opens popup window */}
+              <button
+                onClick={openDebugPopup}
+                disabled={!debugState}
+                className="w-full px-3 py-1.5 rounded bg-orange-600 text-white text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2 hover:bg-orange-700"
+              >
+                <Bug className="h-3 w-3" />
+                Debug Panel
+              </button>
             </div>
           )}
 
@@ -429,13 +636,92 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
               <p className="text-sm">Select pair, date, session, and timeframe, then click Load</p>
             </div>
           ) : (
-            <Plot
-              data={allTraces}
-              layout={layout}
-              config={config}
-              useResizeHandler
-              style={{ width: '100%', height: '100%' }}
-            />
+            <div className="relative h-full" ref={chartContainerRef}>
+              <Plot
+                data={allTraces}
+                layout={layout}
+                config={config}
+                useResizeHandler
+                style={{ width: '100%', height: '100%' }}
+                onClick={handleChartClick}
+              />
+              {/* Horizontal crosshair line */}
+              {hoverInfo && (
+                <div
+                  className="absolute pointer-events-none z-10"
+                  style={{
+                    left: 50,  // margin.l
+                    right: 80, // margin.r
+                    top: hoverInfo.yPixel,
+                    height: 1,
+                    backgroundColor: 'rgba(59, 130, 246, 0.5)',
+                  }}
+                />
+              )}
+              {/* Vertical crosshair line */}
+              {hoverInfo && (
+                <div
+                  className="absolute pointer-events-none z-10"
+                  style={{
+                    left: hoverInfo.xPixel,
+                    top: 50,   // margin.t
+                    bottom: 50, // margin.b
+                    width: 1,
+                    backgroundColor: 'rgba(59, 130, 246, 0.5)',
+                  }}
+                />
+              )}
+              {/* Price label on Y-axis (right side) */}
+              {hoverInfo && (
+                <div
+                  className="absolute bg-blue-600 text-white text-xs font-mono px-2 py-0.5 rounded-sm pointer-events-none z-20"
+                  style={{
+                    right: 4,
+                    top: hoverInfo.yPixel,
+                    transform: 'translateY(-50%)',
+                  }}
+                >
+                  {hoverInfo.price.toFixed(5)}
+                </div>
+              )}
+              {/* Time label on X-axis (bottom) */}
+              {hoverInfo && (
+                <div
+                  className="absolute bg-blue-600 text-white text-xs font-mono px-2 py-0.5 rounded-sm pointer-events-none z-20"
+                  style={{
+                    left: hoverInfo.xPixel,
+                    bottom: 8,
+                    transform: 'translateX(-50%)',
+                  }}
+                >
+                  {new Date(hoverInfo.time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                </div>
+              )}
+              {/* Click data box - shows when a bar is clicked */}
+              {clickedBarInfo && (
+                <div className="absolute top-2 left-2 bg-black/80 text-white text-xs font-mono p-2 rounded border border-gray-600 z-10">
+                  <div className="flex justify-between gap-4 mb-1">
+                    <span className="text-gray-400">Bar {clickedBarInfo.barIndex}</span>
+                    <button
+                      onClick={() => setClickedBarInfo(null)}
+                      className="text-gray-400 hover:text-white"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+                    <span className="text-gray-400">O:</span>
+                    <span>{clickedBarInfo.open.toFixed(5)}</span>
+                    <span className="text-gray-400">H:</span>
+                    <span className="text-green-400">{clickedBarInfo.high.toFixed(5)}</span>
+                    <span className="text-gray-400">L:</span>
+                    <span className="text-red-400">{clickedBarInfo.low.toFixed(5)}</span>
+                    <span className="text-gray-400">C:</span>
+                    <span>{clickedBarInfo.close.toFixed(5)}</span>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>

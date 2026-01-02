@@ -56,6 +56,18 @@ class DevWave:
 
 
 @dataclass
+class SwingLabel:
+    """Label info for a swing point."""
+    bar: int
+    timestamp: datetime
+    price: float
+    is_high: bool
+    child_level: Optional[int] = None  # e.g., 2 for L2
+    child_price: Optional[float] = None  # Price of the child swing
+    bars_ago: Optional[int] = None  # Bars from child swing to this swing
+
+
+@dataclass
 class WaveLevel:
     """
     State for a single wave level (L1, L2, L3, etc.).
@@ -109,6 +121,13 @@ class MMLCDevEngine:
         self._waves: list[DevWave] = []
         self._wave_id_counter: int = 0
         self._candles: list[Candle] = []
+        self._stitch_annotations: list[dict] = []  # Debug annotations for stitch mode
+        self._swing_labels: list[SwingLabel] = []  # Labels for swing points
+
+        # Stitch mode: permanent legs recorded on L1 direction change
+        # Each entry: (start_bar, start_price, end_bar, end_price, direction)
+        self._stitch_permanent_legs: list[tuple[int, float, int, float, int]] = []
+        self._prev_L1_Direction: int = 0  # Track previous direction for change detection
 
         # Wave levels - dynamic list that can grow to L3, L4, etc.
         # Index 0 = L1, Index 1 = L2, etc.
@@ -122,6 +141,16 @@ class MMLCDevEngine:
         # These map old variable names to the new levels structure.
         # Will be removed once all code is refactored.
         # ================================================================
+
+    @property
+    def stitch_annotations(self) -> list[dict]:
+        """Get debug annotations from last stitch build."""
+        return self._stitch_annotations
+
+    @property
+    def swing_labels(self) -> list[SwingLabel]:
+        """Get swing labels from last run."""
+        return self._swing_labels
 
     # L1 backward compatibility properties
     @property
@@ -258,6 +287,46 @@ class MMLCDevEngine:
         self._wave_id_counter += 1
         return self._wave_id_counter
 
+    def _record_stitch_direction_change(self, new_direction: int) -> None:
+        """
+        Record a permanent leg when L1 direction changes (for stitch mode).
+        Called at the moment of direction reversal.
+        """
+        if self._mode != "stitch":
+            return
+
+        old_direction = self._prev_L1_Direction
+
+        # Only record if direction is actually changing (not initial setup)
+        if old_direction != 0 and old_direction != new_direction:
+            if old_direction == 1:
+                # Was UP, now DOWN - record the completed UP leg
+                # From last swing low to the high that just ended
+                if len(self.L1_swing_x) >= 2:
+                    start_bar = self.L1_swing_x[-2] if len(self.L1_swing_x) >= 2 else 0
+                    start_price = self.L1_swing_y[-2] if len(self.L1_swing_y) >= 2 else self.L1_Low
+                else:
+                    start_bar = self.L1_Low_bar
+                    start_price = self.L1_Low
+                end_bar = self.L1_High_bar
+                end_price = self.L1_High
+                self._stitch_permanent_legs.append((start_bar, start_price, end_bar, end_price, 1))
+            else:
+                # Was DOWN, now UP - record the completed DOWN leg
+                # From last swing high to the low that just ended
+                if len(self.L1_swing_x) >= 2:
+                    start_bar = self.L1_swing_x[-2] if len(self.L1_swing_x) >= 2 else 0
+                    start_price = self.L1_swing_y[-2] if len(self.L1_swing_y) >= 2 else self.L1_High
+                else:
+                    start_bar = self.L1_High_bar
+                    start_price = self.L1_High
+                end_bar = self.L1_Low_bar
+                end_price = self.L1_Low
+                self._stitch_permanent_legs.append((start_bar, start_price, end_bar, end_price, -1))
+
+        # Update previous direction tracker
+        self._prev_L1_Direction = new_direction
+
     # ================================================================
     # GENERIC LEVEL METHODS
     # These work with any level (L1, L2, L3, etc.)
@@ -361,7 +430,7 @@ class MMLCDevEngine:
                 made_new_extreme = True
 
                 # Track spline segment for visualization
-                if self._mode == "spline":
+                if self._mode in ("spline", "stitch"):
                     level.spline_segments.append((
                         level.origin_bar, level.origin_price,
                         bar_idx, candle.low
@@ -374,7 +443,7 @@ class MMLCDevEngine:
                 made_new_extreme = True
 
                 # Track spline segment for visualization
-                if self._mode == "spline":
+                if self._mode in ("spline", "stitch"):
                     level.spline_segments.append((
                         level.origin_bar, level.origin_price,
                         bar_idx, candle.high
@@ -421,7 +490,8 @@ class MMLCDevEngine:
             candles: List of OHLC candles for the session
             start_bar: First bar to process (0-indexed)
             end_bar: Last bar to process (inclusive, defaults to last bar)
-            mode: "complete" (final waveform only) or "spline" (all intermediate lines)
+            mode: "complete" (final waveform only), "spline" (all intermediate lines),
+                  or "stitch" (continuous waveform stitching all levels)
 
         Returns:
             List of Wave objects representing the waveform state
@@ -430,6 +500,10 @@ class MMLCDevEngine:
         self._waves = []
         self._wave_id_counter = 0
         self._mode = mode
+
+        # Reset stitch mode state
+        self._stitch_permanent_legs = []
+        self._prev_L1_Direction = 0
 
         # Reset all wave levels
         self.levels = [
@@ -474,30 +548,35 @@ class MMLCDevEngine:
             self._add_developing_leg_level(level.level, parent_dir)
             parent_dir = -parent_dir  # Flip for next level
 
-        # Convert L1 swing points to Wave objects for display
-        waves = self._build_waves()
+        # Build waves based on mode
+        if self._mode == "stitch":
+            # Stitch mode: Custom display based on current state
+            waves = self._build_stitch_display_waves(end_bar)
 
-        # Add waves for all levels >= 2
-        for level in self.levels[1:]:
-            level_waves = self._build_level_waves(
-                level.level,
-                historical_counts.get(level.level, 0)
-            )
-            waves.extend(level_waves)
+        else:
+            # Complete or spline mode
+            waves = self._build_waves()
 
-        # In spline mode, add spline waves for all levels
-        if self._mode == "spline":
-            spline_waves = self._build_spline_waves()  # L1 splines
-            waves.extend(spline_waves)
-            # Add splines for all levels >= 2
             for level in self.levels[1:]:
-                level_spline_waves = self._build_level_spline_waves(level.level)
-                waves.extend(level_spline_waves)
+                level_waves = self._build_level_waves(
+                    level.level,
+                    historical_counts.get(level.level, 0)
+                )
+                waves.extend(level_waves)
 
-        # Add close leg (final segment from deepest level's extreme to close price)
-        close_leg = self._build_close_leg(end_bar)
-        if close_leg:
-            waves.append(close_leg)
+            if self._mode == "spline":
+                spline_waves = self._build_spline_waves()
+                waves.extend(spline_waves)
+                for level in self.levels[1:]:
+                    level_spline_waves = self._build_level_spline_waves(level.level)
+                    waves.extend(level_spline_waves)
+
+            close_leg = self._build_close_leg(end_bar)
+            if close_leg:
+                waves.append(close_leg)
+
+        # Build swing labels for all modes
+        self._build_swing_labels(end_bar)
 
         return waves
 
@@ -524,6 +603,9 @@ class MMLCDevEngine:
             else:
                 # Dead center - default to UP for first bar
                 self.L1_Direction = 1
+
+        # Initialize previous direction tracker for stitch mode
+        self._prev_L1_Direction = self.L1_Direction
 
         # Step 2: Check if we need the artificial preswing at index -1
         # Skip preswing if:
@@ -586,7 +668,7 @@ class MMLCDevEngine:
             if candle.high > self.L1_High and candle.low >= self.L1_Low:
                 # Case 1: New high, no new low - continuing UP
                 # Track spline segment (from last swing to new high) for spline mode
-                if self._mode == "spline" and len(self.L1_swing_x) > 0:
+                if self._mode in ("spline", "stitch") and len(self.L1_swing_x) > 0:
                     origin_bar = self.L1_swing_x[-1]
                     origin_price = self.L1_swing_y[-1]
                     self.L1_spline_segments.append((origin_bar, origin_price, bar_idx, candle.high))
@@ -604,7 +686,7 @@ class MMLCDevEngine:
                 self.L1_swing_x.append(self.L1_High_bar)
                 self.L1_swing_y.append(self.L1_High)
                 # Track spline segment for the initial developing leg of new direction
-                if self._mode == "spline":
+                if self._mode in ("spline", "stitch"):
                     self.L1_spline_segments.append((self.L1_High_bar, self.L1_High, bar_idx, candle.low))
 
                 # L2: Complete current L2 wave and reset to new direction's extreme
@@ -614,6 +696,7 @@ class MMLCDevEngine:
                 self.L1_Low = candle.low
                 self.L1_Low_bar = bar_idx
                 # Direction changes to DOWN
+                self._record_stitch_direction_change(-1)
                 self.L1_Direction = -1
 
             elif candle.high > self.L1_High and candle.low < self.L1_Low:
@@ -648,6 +731,7 @@ class MMLCDevEngine:
                     self.L1_Low = candle.low
                     self.L1_Low_bar = bar_idx
                     # Direction changes to DOWN
+                    self._record_stitch_direction_change(-1)
                     self.L1_Direction = -1
 
                 else:
@@ -678,6 +762,7 @@ class MMLCDevEngine:
                         self.L1_Low = candle.low
                         self.L1_Low_bar = bar_idx
                         # Direction changes to DOWN
+                        self._record_stitch_direction_change(-1)
                         self.L1_Direction = -1
 
             else:
@@ -690,7 +775,7 @@ class MMLCDevEngine:
             if candle.low < self.L1_Low and candle.high <= self.L1_High:
                 # Case 1: New low, no new high - continuing DOWN
                 # Track spline segment (from last swing to new low) for spline mode
-                if self._mode == "spline" and len(self.L1_swing_x) > 0:
+                if self._mode in ("spline", "stitch") and len(self.L1_swing_x) > 0:
                     origin_bar = self.L1_swing_x[-1]
                     origin_price = self.L1_swing_y[-1]
                     self.L1_spline_segments.append((origin_bar, origin_price, bar_idx, candle.low))
@@ -708,7 +793,7 @@ class MMLCDevEngine:
                 self.L1_swing_x.append(self.L1_Low_bar)
                 self.L1_swing_y.append(self.L1_Low)
                 # Track spline segment for the initial developing leg of new direction
-                if self._mode == "spline":
+                if self._mode in ("spline", "stitch"):
                     self.L1_spline_segments.append((self.L1_Low_bar, self.L1_Low, bar_idx, candle.high))
 
                 # L2: Complete current L2 wave and reset to new direction's extreme
@@ -718,6 +803,7 @@ class MMLCDevEngine:
                 self.L1_High = candle.high
                 self.L1_High_bar = bar_idx
                 # Direction changes to UP
+                self._record_stitch_direction_change(1)
                 self.L1_Direction = 1
 
             elif candle.high > self.L1_High and candle.low < self.L1_Low:
@@ -737,6 +823,7 @@ class MMLCDevEngine:
                     self.L1_High = candle.high
                     self.L1_High_bar = bar_idx
                     # Direction changes to UP
+                    self._record_stitch_direction_change(1)
                     self.L1_Direction = 1
 
                 elif candle.close < candle.open:
@@ -771,6 +858,7 @@ class MMLCDevEngine:
                         self.L1_High = candle.high
                         self.L1_High_bar = bar_idx
                         # Direction changes to UP
+                        self._record_stitch_direction_change(1)
                         self.L1_Direction = 1
                     else:
                         # Below midpoint: treat as bearish (high first)
@@ -1131,6 +1219,388 @@ class MMLCDevEngine:
         """Backward compatibility wrapper - delegates to generic method."""
         return self._build_level_spline_waves(2)
 
+    def _is_swing_high(self, index: int) -> bool:
+        """
+        Determine if the L1 swing at index is a HIGH or LOW.
+
+        Returns True if HIGH, False if LOW.
+        """
+        L1 = self.levels[0]
+        if index == 0:
+            # First swing: compare with next to determine type
+            if len(L1.swing_y) > 1:
+                return L1.swing_y[0] > L1.swing_y[1]
+            # Only one swing - use L1 direction (if DOWN, first is HIGH)
+            return L1.direction == -1
+        else:
+            # Compare with previous: if higher than previous, it's HIGH
+            return L1.swing_y[index] > L1.swing_y[index - 1]
+
+    def _build_swing_labels(self, end_bar: int) -> None:
+        """
+        Build swing labels for ALL swing points (L1, L2, L3, etc.) - stitch mode only.
+
+        For each swing at any level, find the most recent child swing (opposite type)
+        that preceded it. This shows what deeper level swing led to this swing.
+        Label format: Line1 = child swing price, Line2 = bars ago.
+        Only create label if there IS a child swing.
+        """
+        self._swing_labels = []
+
+        # Only build labels in stitch mode
+        if self._mode != "stitch":
+            return
+
+        # Collect all swing points from all levels
+        # Each entry: (bar, price, level, is_high)
+        all_swings = []
+
+        # L1 swings from swing_x/swing_y
+        L1 = self.levels[0]
+        for i in range(len(L1.swing_x)):
+            bar = L1.swing_x[i]
+            price = L1.swing_y[i]
+            if bar >= 0 and bar <= end_bar:
+                is_high = self._is_swing_high(i)
+                all_swings.append((bar, price, 1, is_high))
+
+        # L2+ swings from completed_waves
+        for level in self.levels[1:]:
+            for (orig_bar, orig_price, end_bar_wave, end_price) in level.completed_waves:
+                if end_bar_wave >= 0 and end_bar_wave <= end_bar:
+                    # Determine if this is a HIGH or LOW based on price movement
+                    is_high = end_price > orig_price
+                    all_swings.append((end_bar_wave, end_price, level.level, is_high))
+
+        # Sort by bar index
+        all_swings.sort(key=lambda x: x[0])
+
+        # For each swing, find the most recent child swing of opposite type
+        for i, (bar, price, level, is_high) in enumerate(all_swings):
+            if bar < 0 or bar > end_bar:
+                continue
+
+            # Find deepest child swing leading to this swing
+            # Search ALL preceding bars (not just since last swing of any level)
+            child_level = None
+            child_bar = None
+            child_price = None
+
+            for child_level_num in range(level + 1, len(self.levels) + 1):
+                # Child swing is opposite type: if parent HIGH, look for child LOW
+                looking_for_low = is_high
+                # Search from start (bar 0) to just before this swing
+                child_swing = self._find_most_recent_child_swing(
+                    child_level_num,
+                    bar,
+                    looking_for_low
+                )
+                if child_swing:
+                    child_level = child_level_num
+                    child_bar = child_swing[0]
+                    child_price = child_swing[1]
+                    # Keep searching for deeper levels
+
+            # Only create label if there IS a child swing
+            if child_level is not None and child_bar is not None and child_price is not None:
+                bars_ago = bar - child_bar
+                timestamp = self._candles[bar].timestamp
+
+                self._swing_labels.append(SwingLabel(
+                    bar=bar,
+                    timestamp=timestamp,
+                    price=price,
+                    is_high=is_high,
+                    child_level=child_level,
+                    child_price=child_price,
+                    bars_ago=bars_ago,
+                ))
+
+    def _find_most_recent_child_swing(
+        self,
+        level_num: int,
+        before_bar: int,
+        looking_for_low: bool
+    ) -> Optional[tuple]:
+        """
+        Find the most recent child swing of the specified type before the given bar.
+
+        Returns (bar, price) of the most recent matching swing, or None.
+        """
+        if level_num > len(self.levels):
+            return None
+
+        level = self.levels[level_num - 1]
+        best_match = None
+
+        for (orig_bar, orig_price, end_bar, end_price) in level.completed_waves:
+            if end_bar >= before_bar:
+                continue  # Must be before the parent swing
+
+            # Check if this is the right type (HIGH or LOW)
+            is_high = end_price > orig_price
+            is_low = not is_high
+
+            if looking_for_low and is_low:
+                if best_match is None or end_bar > best_match[0]:
+                    best_match = (end_bar, end_price)
+            elif not looking_for_low and is_high:
+                if best_match is None or end_bar > best_match[0]:
+                    best_match = (end_bar, end_price)
+
+        return best_match
+
+    def _find_preceding_child_swing(
+        self,
+        level_num: int,
+        after_bar: int,
+        before_bar: int,
+        looking_for_low: bool
+    ) -> Optional[tuple]:
+        """
+        Find child level swing that occurred between after_bar and before_bar.
+
+        Args:
+            level_num: The child level to search (2, 3, 4, etc.)
+            after_bar: Must be after this bar
+            before_bar: Must be before or at this bar (parent extreme bar)
+            looking_for_low: True if looking for child LOW, False for child HIGH
+
+        Returns:
+            Tuple (end_bar, end_price) if found, else None.
+            If multiple found, returns the latest one (closest to before_bar).
+        """
+        level = self._get_level(level_num)
+        if not level:
+            return None
+
+        best_match = None
+        for (orig_bar, orig_price, end_bar, end_price) in level.completed_waves:
+            # Check if this wave's endpoint falls in the range
+            if end_bar > after_bar and end_bar <= before_bar:
+                # Determine if this wave is a LOW or HIGH
+                # Wave is a LOW if end_price < orig_price
+                is_low = end_price < orig_price
+                if is_low == looking_for_low:
+                    # Take the latest one (closest to parent extreme)
+                    if best_match is None or end_bar > best_match[0]:
+                        best_match = (end_bar, end_price)
+        return best_match
+
+    def _get_recursive_child_points(
+        self,
+        parent_level: int,
+        parent_bar: int,
+        parent_is_high: bool,
+        prev_bar: int
+    ) -> list:
+        """
+        Recursively find child swing points leading up to a parent extreme.
+
+        For a parent HIGH at bar X, finds L2 LOW, then L3 HIGH before that, etc.
+        Returns points in order from deepest to shallowest (e.g., L4→L3→L2).
+
+        Args:
+            parent_level: The parent level (1, 2, 3, etc.)
+            parent_bar: Bar index of parent extreme
+            parent_is_high: True if parent made a HIGH, False if LOW
+            prev_bar: Previous point's bar (search starts after this)
+
+        Returns:
+            List of (bar, price, level) tuples, deepest first.
+        """
+        child_level = parent_level + 1
+        # Child swing is opposite type: if parent HIGH, look for child LOW
+        looking_for_low = parent_is_high
+
+        child_swing = self._find_preceding_child_swing(
+            child_level,
+            prev_bar,
+            parent_bar,
+            looking_for_low
+        )
+
+        if not child_swing:
+            return []
+
+        child_bar, child_price = child_swing
+        child_is_high = not looking_for_low  # Opposite of what we searched for
+
+        # Recursively get grandchild points
+        grandchild_points = self._get_recursive_child_points(
+            child_level,
+            child_bar,
+            child_is_high,
+            prev_bar
+        )
+
+        # Return grandchildren first (deepest), then this child
+        return grandchild_points + [(child_bar, child_price, child_level)]
+
+    def _build_stitch_waves(self, end_bar: int) -> list[Wave]:
+        """
+        Build stitch waveform using recursive parent-child relationship.
+
+        For each L1 swing:
+        - Recursively find child swings (L2, L3, L4...) leading up to it
+        - Insert all child points (deepest first), then L1 point
+
+        Example: L1 HIGH at bar 50
+          → finds L2 LOW at bar 45
+            → finds L3 HIGH at bar 43
+              → finds L4 LOW at bar 42
+          Result: L4_low → L3_high → L2_low → L1_high
+
+        Segments are colored by DESTINATION point's level.
+        """
+        from datetime import timedelta
+
+        L1 = self.levels[0]
+
+        # Build list of stitch points as (bar, price, level)
+        stitch_points = []
+
+        # Clear and populate annotations for debugging
+        self._stitch_annotations = []
+
+        for i in range(len(L1.swing_x)):
+            bar = L1.swing_x[i]
+            price = L1.swing_y[i]
+
+            if bar > end_bar:
+                continue
+
+            # Determine if this L1 swing is HIGH or LOW
+            is_high = self._is_swing_high(i)
+
+            # Get previous bar for search range
+            prev_bar = L1.swing_x[i - 1] if i > 0 else -1
+
+            # Recursively find all child points leading to this L1 swing
+            # Returns deepest first: [L4, L3, L2] for example
+            child_points = self._get_recursive_child_points(
+                parent_level=1,
+                parent_bar=bar,
+                parent_is_high=is_high,
+                prev_bar=prev_bar
+            )
+
+            # Generate annotation for this L1 swing
+            if bar >= 0 and bar < len(self._candles):
+                timestamp = self._candles[bar].timestamp
+                if child_points:
+                    # Show immediate child (L2) info
+                    # child_points is deepest first, so L2 is last
+                    l2_point = child_points[-1]  # (bar, price, level)
+                    l2_bar, l2_price, l2_level = l2_point
+                    bars_ago = bar - l2_bar
+                    child_type = "low" if is_high else "high"
+                    text = f"[L{l2_level} {child_type}: {l2_price:.5f} - {bars_ago} bars]"
+                else:
+                    child_type = "low" if is_high else "high"
+                    text = f"[No L2 {child_type} found]"
+
+                self._stitch_annotations.append({
+                    'bar': bar,
+                    'timestamp': timestamp.isoformat(),
+                    'price': price,
+                    'level': 1,
+                    'is_high': is_high,
+                    'text': text,
+                    'child_points': [(cp[0], cp[1], cp[2]) for cp in child_points],
+                })
+
+            # Insert child points (deepest first)
+            stitch_points.extend(child_points)
+
+            # Insert L1 point
+            stitch_points.append((bar, price, 1))
+
+        # Build waves from consecutive points
+        waves = []
+        for i in range(len(stitch_points) - 1):
+            bar1, price1, level1 = stitch_points[i]
+            bar2, price2, level2 = stitch_points[i + 1]
+
+            # Direction from price movement
+            direction = Direction.UP if price2 > price1 else Direction.DOWN
+
+            # Get timestamps for bar indices
+            if bar1 < 0:
+                if len(self._candles) >= 2:
+                    interval = self._candles[1].timestamp - self._candles[0].timestamp
+                else:
+                    interval = timedelta(minutes=10)
+                t1 = self._candles[0].timestamp - interval
+            else:
+                t1 = self._candles[min(bar1, len(self._candles) - 1)].timestamp
+
+            if bar2 < 0:
+                if len(self._candles) >= 2:
+                    interval = self._candles[1].timestamp - self._candles[0].timestamp
+                else:
+                    interval = timedelta(minutes=10)
+                t2 = self._candles[0].timestamp - interval
+            else:
+                t2 = self._candles[min(bar2, len(self._candles) - 1)].timestamp
+
+            # Color by DESTINATION level
+            segment_level = level2
+
+            wave = Wave(
+                id=3000 + i,
+                level=segment_level,
+                direction=direction,
+                start_time=t1,
+                start_price=price1,
+                end_time=t2,
+                end_price=price2,
+                parent_id=None,
+                is_active=True,
+                is_spline=False,
+            )
+            waves.append(wave)
+
+        # Add close leg if needed
+        if stitch_points and end_bar >= 0 and end_bar < len(self._candles):
+            candle = self._candles[end_bar]
+            last_bar, last_price, last_level = stitch_points[-1]
+
+            # Only add close leg if close differs from last point
+            if abs(candle.close - last_price) > 1e-10:
+                if last_bar < 0:
+                    if len(self._candles) >= 2:
+                        interval = self._candles[1].timestamp - self._candles[0].timestamp
+                    else:
+                        interval = timedelta(minutes=10)
+                    t1 = self._candles[0].timestamp - interval
+                else:
+                    t1 = self._candles[min(last_bar, len(self._candles) - 1)].timestamp
+
+                if len(self._candles) >= 2:
+                    interval = self._candles[1].timestamp - self._candles[0].timestamp
+                else:
+                    interval = timedelta(minutes=10)
+                t2 = candle.timestamp + interval
+
+                direction = Direction.UP if candle.close > last_price else Direction.DOWN
+
+                close_wave = Wave(
+                    id=3000 + len(stitch_points),
+                    level=last_level + 1,
+                    direction=direction,
+                    start_time=t1,
+                    start_price=last_price,
+                    end_time=t2,
+                    end_price=candle.close,
+                    parent_id=None,
+                    is_active=True,
+                    is_spline=False,
+                )
+                waves.append(close_wave)
+
+        return waves
+
     def _build_close_leg(self, end_bar: int) -> Optional[Wave]:
         """
         Build a close leg from the deepest level's extreme to the close price.
@@ -1222,6 +1692,160 @@ class MMLCDevEngine:
             is_active=True,
             is_spline=False,
         )
+
+    # ================================================================
+    # STITCH MODE DISPLAY
+    # Custom wave display logic for stitch mode
+    # ================================================================
+
+    def _build_stitch_display_waves(self, end_bar: int) -> list[Wave]:
+        """
+        Build custom display waves for stitch mode.
+
+        Only shows permanent L1 legs - recorded at the moment of direction change.
+        """
+        from datetime import timedelta
+        import sys
+
+        waves: list[Wave] = []
+
+        # Debug output
+        print(f"\n[STITCH] Bar {end_bar}: {len(self._stitch_permanent_legs)} permanent legs", file=sys.stderr)
+
+        # Only show permanent legs (recorded on direction change)
+        for i, (start_bar, start_price, end_bar_leg, end_price, direction) in enumerate(self._stitch_permanent_legs):
+            # Get timestamp for start point
+            if start_bar < 0:
+                if len(self._candles) >= 2:
+                    interval = self._candles[1].timestamp - self._candles[0].timestamp
+                else:
+                    interval = timedelta(minutes=10)
+                start_time = self._candles[0].timestamp - interval
+            else:
+                start_time = self._candles[min(start_bar, len(self._candles) - 1)].timestamp
+
+            # Get timestamp for end point
+            end_time = self._candles[min(end_bar_leg, len(self._candles) - 1)].timestamp
+
+            wave_direction = Direction.UP if direction == 1 else Direction.DOWN
+
+            wave = Wave(
+                id=6000 + i,  # Stitch permanent leg IDs
+                level=1,  # Yellow (L1)
+                direction=wave_direction,
+                start_time=start_time,
+                start_price=start_price,
+                end_time=end_time,
+                end_price=end_price,
+                parent_id=None,
+                is_active=True,
+                is_spline=False,  # SOLID line
+            )
+            waves.append(wave)
+            print(f"  Leg {i}: bar {start_bar} ({start_price:.5f}) -> bar {end_bar_leg} ({end_price:.5f}) [{'UP' if direction == 1 else 'DOWN'}]", file=sys.stderr)
+
+        return waves
+
+    def _print_wave_state_debug(self, end_bar: int) -> None:
+        """Print comprehensive wave state for debugging."""
+        import sys
+
+        print(f"\n{'='*60}", file=sys.stderr)
+        print(f"[WAVE STATE] Bar {end_bar}", file=sys.stderr)
+        print(f"{'='*60}", file=sys.stderr)
+
+        # L1 State
+        dir_str = "UP" if self.L1_Direction == 1 else "DOWN"
+        print(f"L1_Direction: {dir_str}", file=sys.stderr)
+        print(f"L1_High: {self.L1_High:.5f} @ bar {self.L1_High_bar}", file=sys.stderr)
+        print(f"L1_Low:  {self.L1_Low:.5f} @ bar {self.L1_Low_bar}", file=sys.stderr)
+
+        # L1 Swing Points
+        print(f"\nL1 Swing Points ({len(self.L1_swing_x)} points):", file=sys.stderr)
+        for i, (bar, price) in enumerate(zip(self.L1_swing_x, self.L1_swing_y)):
+            label = "developing" if i == len(self.L1_swing_x) - 1 else f"swing {i}"
+            print(f"  [{i}] bar={bar}, price={price:.5f} ({label})", file=sys.stderr)
+
+        # L1 Spline Segments
+        print(f"\nL1 Spline Segments ({len(self.L1_spline_segments)} segments):", file=sys.stderr)
+        for i, (ob, op, eb, ep) in enumerate(self.L1_spline_segments):
+            dir_s = "UP" if ep > op else "DOWN"
+            print(f"  [{i}] bar {ob} ({op:.5f}) -> bar {eb} ({ep:.5f}) [{dir_s}]", file=sys.stderr)
+
+        # L2+ Levels
+        print(f"\nL2+ Levels ({len(self.levels)} total):", file=sys.stderr)
+        for level in self.levels:
+            if level.level == 1:
+                continue  # Skip L1, already shown above
+            dir_str = "UP" if level.direction == 1 else ("DOWN" if level.direction == -1 else "NEUTRAL")
+            print(f"  L{level.level}: dir={dir_str}", file=sys.stderr)
+            print(f"    High: {level.high:.5f} @ bar {level.high_bar}", file=sys.stderr)
+            print(f"    Low:  {level.low:.5f} @ bar {level.low_bar}", file=sys.stderr)
+            print(f"    Origin: bar {level.origin_bar}, price {level.origin_price:.5f}", file=sys.stderr)
+            print(f"    Completed waves: {len(level.completed_waves)}", file=sys.stderr)
+            for j, (start_bar, start_p, end_bar_w, end_p) in enumerate(level.completed_waves):
+                print(f"      [{j}] bar {start_bar} ({start_p:.5f}) -> bar {end_bar_w} ({end_p:.5f})", file=sys.stderr)
+            print(f"    Spline segments: {len(level.spline_segments)}", file=sys.stderr)
+
+        print(f"{'='*60}\n", file=sys.stderr)
+
+    def get_debug_state(self, end_bar: int) -> dict:
+        """
+        Return current wave state as a dictionary for UI debugging.
+        """
+        # Get current candle data
+        current_candle = None
+        if 0 <= end_bar < len(self._candles):
+            c = self._candles[end_bar]
+            current_candle = {
+                "open": c.open,
+                "high": c.high,
+                "low": c.low,
+                "close": c.close,
+            }
+
+        # Build levels data for all levels
+        levels_data = []
+        for level in self.levels:
+            dir_str = "UP" if level.direction == 1 else ("DOWN" if level.direction == -1 else "NEUTRAL")
+            level_data = {
+                "level": level.level,
+                "direction": dir_str,
+                "high": level.high,
+                "high_bar": level.high_bar,
+                "low": level.low,
+                "low_bar": level.low_bar,
+                "origin_bar": level.origin_bar,
+                "origin_price": level.origin_price,
+                "completed_waves": [
+                    {"start_bar": sb, "start_price": sp, "end_bar": eb, "end_price": ep}
+                    for sb, sp, eb, ep in level.completed_waves
+                ],
+                "spline_segments": [
+                    {"start_bar": sb, "start_price": sp, "end_bar": eb, "end_price": ep}
+                    for sb, sp, eb, ep in level.spline_segments
+                ],
+            }
+            # Add swing points for L1
+            if level.level == 1:
+                level_data["swing_points"] = [
+                    {"bar": bar, "price": price}
+                    for bar, price in zip(level.swing_x, level.swing_y)
+                ]
+            levels_data.append(level_data)
+
+        return {
+            "mode": self._mode,
+            "end_bar": end_bar,
+            "current_candle": current_candle,
+            "levels": levels_data,
+            "stitch_permanent_legs": [
+                {"start_bar": sb, "start_price": sp, "end_bar": eb, "end_price": ep, "direction": "UP" if d == 1 else "DOWN"}
+                for sb, sp, eb, ep, d in self._stitch_permanent_legs
+            ],
+            "prev_L1_Direction": "UP" if self._prev_L1_Direction == 1 else ("DOWN" if self._prev_L1_Direction == -1 else "NONE"),
+            "num_waves_returned": len(self._waves) if hasattr(self, '_waves') else 0,
+        }
 
     # ================================================================
     # HELPER METHODS
