@@ -457,7 +457,7 @@ export const api = {
       timeframe: TimeframeType;
       startBar?: number;
       endBar?: number;
-      mode?: 'complete' | 'spline';
+      mode?: 'complete' | 'spline' | 'stitch';
       workingDirectory?: string;
     }): Promise<DevRunResponse> => {
       const searchParams = new URLSearchParams({

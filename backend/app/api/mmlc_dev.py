@@ -59,8 +59,11 @@ class DebugState(BaseModel):
     current_candle: Optional[dict]
     levels: list[dict]  # All wave levels (L1, L2, L3, etc.) with all their properties
     stitch_permanent_legs: list[dict]
+    stitch_swings: list[dict] = []  # Swing points: bar, price, direction (+1/-1)
     prev_L1_Direction: str
     num_waves_returned: int
+    L1_count: int = 0  # Number of extremes in current L1 direction
+    L1_leg: int = 0  # Overall L1 swing number (never resets)
 
 
 class DevRunResponse(BaseModel):

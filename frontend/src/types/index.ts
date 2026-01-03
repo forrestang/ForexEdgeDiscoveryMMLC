@@ -400,6 +400,19 @@ export interface DebugLevelData {
   completed_waves: DebugSplineSegment[];
   spline_segments: DebugSplineSegment[];
   swing_points?: DebugSwingPoint[];  // Only for L1
+  // Per-bar indexed arrays
+  leg_history: number[];       // leg at bar i
+  count_history: number[];     // count at bar i
+  direction_history: number[]; // direction at bar i (+1/-1/0)
+  // Current counters
+  current_leg: number;
+  current_count: number;
+}
+
+export interface DebugStitchSwing {
+  bar: number;
+  price: number;
+  direction: number;  // +1 = UP, -1 = DOWN
 }
 
 export interface DebugState {
@@ -408,8 +421,11 @@ export interface DebugState {
   current_candle: DebugCandle | null;
   levels: DebugLevelData[];
   stitch_permanent_legs: DebugStitchLeg[];
+  stitch_swings: DebugStitchSwing[];
   prev_L1_Direction: string;
   num_waves_returned: number;
+  L1_count: number;  // Number of extremes in current L1 direction
+  L1_leg: number;  // Overall L1 swing number (never resets)
 }
 
 export interface DevRunResponse {

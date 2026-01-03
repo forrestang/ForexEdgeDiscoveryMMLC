@@ -757,6 +757,15 @@ class MMLCDevEngine:
             self._add_developing_leg_level(level.level, parent_dir)
             parent_dir = -parent_dir  # Flip for next level
 
+        # DEBUG: Print swing arrays for complete/spline mode diagnosis
+        print(f"\n[DEBUG] End bar {end_bar}, Mode: {self._mode}", flush=True)
+        print(f"[DEBUG] L1_Direction: {'+1 (UP)' if self.L1_Direction == 1 else '-1 (DOWN)'}", flush=True)
+        print(f"[DEBUG] L1_High: bar {self.L1_High_bar}, price {self.L1_High:.5f}", flush=True)
+        print(f"[DEBUG] L1_Low: bar {self.L1_Low_bar}, price {self.L1_Low:.5f}", flush=True)
+        print(f"[DEBUG] L1_swing_x: {list(self.L1_swing_x)}", flush=True)
+        print(f"[DEBUG] L1_swing_y: {[f'{y:.5f}' for y in self.L1_swing_y]}", flush=True)
+        print(f"[DEBUG] _stitch_swings ({len(self._stitch_swings)} pts): {[(b, f'{p:.5f}', d) for b, p, d in self._stitch_swings]}", flush=True)
+
         # Build waves based on mode
         if self._mode == "stitch":
             # Stitch mode: Custom display based on current state
@@ -959,12 +968,18 @@ class MMLCDevEngine:
 
                 print(f"[OUTSIDE BAR] Bar {bar_idx} (L1=UP): direction={'+1 (bullish)' if bar_direction == 1 else '-1 (bearish)'}", flush=True)
 
-                # POP the previous developing swing (the L1_High that's being replaced)
-                self._pop_stitch_swing()
+                # Only pop if last swing is the developing L1 HIGH (same bar as L1_High_bar)
+                # Don't pop child swings - they're on different bars
+                if self._stitch_swings and self._stitch_swings[-1][0] == self.L1_High_bar:
+                    self._pop_stitch_swing()
 
                 if bar_direction == 1:
-                    # Bullish: LOW happened first, then HIGH
-                    # Push swing low to L1 arrays
+                    # Bullish: LOW happened first, then HIGH (CONTINUATION - L1 stays UP)
+                    # FIRST: Confirm the previous HIGH before adding outside bar swings
+                    self.L1_swing_x.append(self.L1_High_bar)
+                    self.L1_swing_y.append(self.L1_High)
+                    # Add outside bar LOW only - let developing leg handle the HIGH
+                    # This allows subsequent continuations to smoothly extend the line
                     self.L1_swing_x.append(bar_idx)
                     self.L1_swing_y.append(candle.low)
 
@@ -983,9 +998,14 @@ class MMLCDevEngine:
 
                 else:
                     # Bearish: HIGH happened first, then LOW
-                    # Push swing high to L1 arrays
+                    # FIRST: Confirm the previous HIGH before adding outside bar swings
+                    self.L1_swing_x.append(self.L1_High_bar)
+                    self.L1_swing_y.append(self.L1_High)
+                    # Then add outside bar HIGH and LOW
                     self.L1_swing_x.append(bar_idx)
                     self.L1_swing_y.append(candle.high)
+                    self.L1_swing_x.append(bar_idx)
+                    self.L1_swing_y.append(candle.low)
 
                     # L2: Reset to the new low (final extreme after outside bar)
                     # Pass NEW direction (-1) because L1 is reversing to DOWN
@@ -1089,14 +1109,21 @@ class MMLCDevEngine:
 
                 print(f"[OUTSIDE BAR] Bar {bar_idx} (L1=DOWN): direction={'+1 (bullish)' if bar_direction == 1 else '-1 (bearish)'}", flush=True)
 
-                # POP the previous developing swing (the L1_Low that's being replaced)
-                self._pop_stitch_swing()
+                # Only pop if last swing is the developing L1 LOW (same bar as L1_Low_bar)
+                # Don't pop child swings - they're on different bars
+                if self._stitch_swings and self._stitch_swings[-1][0] == self.L1_Low_bar:
+                    self._pop_stitch_swing()
 
                 if bar_direction == 1:
                     # Bullish: LOW happened first, then HIGH
-                    # Push swing low to L1 arrays
+                    # FIRST: Confirm the previous LOW before adding outside bar swings
+                    self.L1_swing_x.append(self.L1_Low_bar)
+                    self.L1_swing_y.append(self.L1_Low)
+                    # Then add outside bar LOW and HIGH
                     self.L1_swing_x.append(bar_idx)
                     self.L1_swing_y.append(candle.low)
+                    self.L1_swing_x.append(bar_idx)
+                    self.L1_swing_y.append(candle.high)
 
                     # L2: Reset to the new high (final extreme after outside bar)
                     # Pass NEW direction (+1) because L1 is reversing to UP
@@ -1117,8 +1144,12 @@ class MMLCDevEngine:
                     self.L1_Direction = 1
 
                 else:
-                    # Bearish: HIGH happened first, then LOW
-                    # Push swing high to L1 arrays
+                    # Bearish: HIGH happened first, then LOW (CONTINUATION - L1 stays DOWN)
+                    # FIRST: Confirm the previous LOW before adding outside bar swings
+                    self.L1_swing_x.append(self.L1_Low_bar)
+                    self.L1_swing_y.append(self.L1_Low)
+                    # Add outside bar HIGH only - let developing leg handle the LOW
+                    # This allows subsequent continuations to smoothly extend the line
                     self.L1_swing_x.append(bar_idx)
                     self.L1_swing_y.append(candle.high)
 
@@ -1232,16 +1263,26 @@ class MMLCDevEngine:
 
         If L1_Direction is UP: draw to L1_High
         If L1_Direction is DOWN: draw to L1_Low
+
+        Skip if the last point is already the current extreme (e.g., after outside bar).
         """
         if len(self.L1_swing_x) == 0:
             return
 
         if self.L1_Direction == 1:
             # UP direction: developing leg goes to current high
+            # Skip if last point is already the current high (e.g., after outside bar confirmation)
+            if (self.L1_swing_x[-1] == self.L1_High_bar and
+                self.L1_swing_y[-1] == self.L1_High):
+                return
             self.L1_swing_x.append(self.L1_High_bar)
             self.L1_swing_y.append(self.L1_High)
         elif self.L1_Direction == -1:
             # DOWN direction: developing leg goes to current low
+            # Skip if last point is already the current low (e.g., after outside bar confirmation)
+            if (self.L1_swing_x[-1] == self.L1_Low_bar and
+                self.L1_swing_y[-1] == self.L1_Low):
+                return
             self.L1_swing_x.append(self.L1_Low_bar)
             self.L1_swing_y.append(self.L1_Low)
 
