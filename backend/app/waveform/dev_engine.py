@@ -384,7 +384,9 @@ class MMLCDevEngine:
         """
         if self._mode == "stitch" and self._stitch_swings:
             popped = self._stitch_swings.pop()
-            print(f"[STITCH POP] Removed swing: bar={popped[0]}, price={popped[1]:.5f}, dir={'+1' if popped[2] > 0 else '-1'}, remaining={len(self._stitch_swings)}", flush=True)
+            import traceback
+            caller = traceback.extract_stack()[-2]
+            print(f"[STITCH POP] Removed swing: bar={popped[0]}, price={popped[1]:.5f}, dir={'+1' if popped[2] > 0 else '-1'}, remaining={len(self._stitch_swings)}, caller={caller.lineno}", flush=True)
             return popped
         return None
 
@@ -622,7 +624,9 @@ class MMLCDevEngine:
                 made_new_extreme = True
 
                 # Record the new extreme for per-bar tracking (new LOW = -1)
+                print(f"[L2 EXTREME] Bar {bar_idx}: BEFORE record_new_extreme, current_count={level.current_count}, id={id(level)}", flush=True)
                 level.record_new_extreme(-1)
+                print(f"[L2 EXTREME] Bar {bar_idx}: AFTER record_new_extreme, current_count={level.current_count}, id={id(level)}", flush=True)
 
                 # Track spline segment for visualization
                 if self._mode in ("spline", "stitch"):
@@ -885,8 +889,8 @@ class MMLCDevEngine:
         # Store old direction to detect L1 reversals
         old_L1_direction = self.L1_Direction
 
-        # Debug: Show values being compared for first 5 bars
-        if bar_idx <= 5:
+        # Debug: Show values being compared for first 6 bars
+        if bar_idx <= 6:
             print(f"[CASE EVAL] Bar {bar_idx}: L1_Dir={self.L1_Direction}, H={candle.high:.5f}, L={candle.low:.5f}, L1_H={self.L1_High:.5f}, L1_L={self.L1_Low:.5f}", flush=True)
             print(f"  Case1(UP cont): H>L1_H={candle.high > self.L1_High}, L>=L1_L={candle.low >= self.L1_Low}", flush=True)
             print(f"  Case2(UP rev):  L<L1_L={candle.low < self.L1_Low}, H<=L1_H={candle.high <= self.L1_High}", flush=True)
@@ -908,6 +912,14 @@ class MMLCDevEngine:
                 # Update L1_High
                 self.L1_High = candle.high
                 self.L1_High_bar = bar_idx
+
+                # Stitch mode: Pop previous swing if it's the same direction (+1)
+                # This handles both:
+                # - No child swing: last is +1 (prev L1 HIGH), pop and push new
+                # - Consecutive L1 highs after child: last is +1, pop and push new
+                # - Child swing just added: last is -1, just push (no pop)
+                if self._mode == "stitch" and self._stitch_swings and self._stitch_swings[-1][2] == +1:
+                    self._pop_stitch_swing()
 
                 # Push new L1 HIGH to stitch swings
                 self._push_stitch_swing(bar_idx, candle.high, +1)
@@ -1008,10 +1020,9 @@ class MMLCDevEngine:
                         child_swing = self._find_child_swing_at_bar(bar_idx)
                         if child_swing:
                             level_num, price, direction = child_swing
-                            # Get the level that made this swing
-                            level = self._get_level(level_num)
-                            # If count > 1, this is a continuation - pop old swing first
-                            if level and level.current_count > 1:
+                            # Only pop if last swing direction matches new child direction
+                            # (same direction = child continuation, pop old and push new)
+                            if self._stitch_swings and self._stitch_swings[-1][2] == direction:
                                 self._pop_stitch_swing()
                             self._push_stitch_swing_child(bar_idx, price, direction)
 
@@ -1031,6 +1042,14 @@ class MMLCDevEngine:
                 # Update L1_Low
                 self.L1_Low = candle.low
                 self.L1_Low_bar = bar_idx
+
+                # Stitch mode: Pop previous swing if it's the same direction (-1)
+                # This handles both:
+                # - No child swing: last is -1 (prev L1 LOW), pop and push new
+                # - Consecutive L1 lows after child: last is -1, pop and push new
+                # - Child swing just added: last is +1, just push (no pop)
+                if self._mode == "stitch" and self._stitch_swings and self._stitch_swings[-1][2] == -1:
+                    self._pop_stitch_swing()
 
                 # Push new L1 LOW to stitch swings
                 self._push_stitch_swing(bar_idx, candle.low, -1)
@@ -1134,10 +1153,9 @@ class MMLCDevEngine:
                         child_swing = self._find_child_swing_at_bar(bar_idx)
                         if child_swing:
                             level_num, price, direction = child_swing
-                            # Get the level that made this swing
-                            level = self._get_level(level_num)
-                            # If count > 1, this is a continuation - pop old swing first
-                            if level and level.current_count > 1:
+                            # Only pop if last swing direction matches new child direction
+                            # (same direction = child continuation, pop old and push new)
+                            if self._stitch_swings and self._stitch_swings[-1][2] == direction:
                                 self._pop_stitch_swing()
                             self._push_stitch_swing_child(bar_idx, price, direction)
 
@@ -1179,11 +1197,11 @@ class MMLCDevEngine:
 
         # Reset L2 with NEW direction
         child_direction = -new_parent_direction
-        if bar_idx <= 5:
-            print(f"[RESET L2] bar {bar_idx}: old_parent={old_parent_direction}, new_parent={new_parent_direction}, child_dir={child_direction}, BEFORE dir={level.direction}", flush=True)
+        if bar_idx <= 6:
+            print(f"[RESET L2] bar {bar_idx}: old_parent={old_parent_direction}, new_parent={new_parent_direction}, child_dir={child_direction}, BEFORE dir={level.direction}, current_count={level.current_count}", flush=True)
         level.reset(bar_idx, new_l2_origin_price, child_direction)
-        if bar_idx <= 5:
-            print(f"[RESET L2] bar {bar_idx}: AFTER dir={level.direction}", flush=True)
+        if bar_idx <= 6:
+            print(f"[RESET L2] bar {bar_idx}: AFTER dir={level.direction}, current_count={level.current_count}", flush=True)
 
         # Cascade to L3+ using the NEW direction
         next_level = self._get_level(3)
