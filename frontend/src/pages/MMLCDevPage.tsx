@@ -39,6 +39,7 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
 
   // Display mode
   const [mode, setMode] = useState<'complete' | 'spline' | 'stitch'>('complete')
+  const [showWaveform, setShowWaveform] = useState(true)
 
   // Debug panel
   const [debugState, setDebugState] = useState<DebugState | null>(null)
@@ -121,6 +122,8 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
       setStartBar(0)
       setEndBar(data.total_bars - 1)
       setWaves([]) // Clear waves when loading new session
+      // Auto-run waveform after loading
+      setTimeout(() => runEngine.mutate(), 100)
     },
   })
 
@@ -309,32 +312,8 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
     })
   }
 
-  // Convert swing labels to Plotly annotations (compact 2-line format) - stitch mode only
-  // Line 1: child swing price, Line 2: bars ago
-  const swingLabelAnnotations: Partial<Annotations>[] = mode === 'stitch'
-    ? swingLabels
-        .filter((label) => label.child_price !== undefined && label.bars_ago !== undefined)
-        .map((label) => ({
-          x: label.timestamp,
-          y: label.price,
-          xref: 'x' as const,
-          yref: 'y' as const,
-          text: `${label.child_price.toFixed(5)}<br>${label.bars_ago}`,  // Line 1: price, Line 2: bars ago
-          showarrow: false,
-          font: {
-            size: 9,
-            color: '#ffffff',
-            family: 'monospace',
-          },
-          bgcolor: 'transparent',
-          borderpad: 0,
-          xanchor: 'center' as const,
-          yanchor: label.is_high ? 'bottom' : 'top',  // Above highs, below lows
-          yshift: label.is_high ? 8 : -8,  // Offset from price
-        }))
-    : []
-
-  const plotlyAnnotations: Partial<Annotations>[] = swingLabelAnnotations
+  // Swing labels disabled - keeping code for potential future use
+  const plotlyAnnotations: Partial<Annotations>[] = []
 
   const layout: Partial<Layout> = {
     title: {
@@ -389,7 +368,7 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
     responsive: true,
   }
 
-  const allTraces: Data[] = [candlestickTrace, ...waveformTraces]
+  const allTraces: Data[] = showWaveform ? [candlestickTrace, ...waveformTraces] : [candlestickTrace]
 
   const pairs = pairsData?.pairs || []
   const dates = datesData?.dates || []
@@ -513,6 +492,30 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
                 </div>
               </div>
 
+              {/* Bar Position Slider */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setEndBar(Math.max(startBar, endBar - 1))}
+                  className="px-2 py-1 rounded bg-muted hover:bg-muted/80 text-sm font-bold"
+                >
+                  −
+                </button>
+                <button
+                  onClick={() => setEndBar(Math.min(totalBars - 1, endBar + 1))}
+                  className="px-2 py-1 rounded bg-muted hover:bg-muted/80 text-sm font-bold"
+                >
+                  +
+                </button>
+                <input
+                  type="range"
+                  min={startBar}
+                  max={totalBars - 1}
+                  value={endBar}
+                  onChange={(e) => setEndBar(parseInt(e.target.value))}
+                  className="flex-1 h-2 bg-muted rounded-lg appearance-none cursor-pointer accent-primary"
+                />
+              </div>
+
               <p className="text-xs text-muted-foreground">
                 Total bars: {totalBars}
               </p>
@@ -550,6 +553,18 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
                   Stitch
                 </button>
               </div>
+
+              {/* Waveform Toggle */}
+              <button
+                onClick={() => setShowWaveform(!showWaveform)}
+                className={`w-full px-2 py-1 rounded text-xs font-medium transition-colors ${
+                  showWaveform
+                    ? 'bg-yellow-600 text-white'
+                    : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                }`}
+              >
+                Waveform: {showWaveform ? 'ON' : 'OFF'}
+              </button>
 
               <div className="flex gap-2">
                 <button
