@@ -94,6 +94,16 @@ class WaveLevel:
     swing_x: list = field(default_factory=list)  # Bar indices
     swing_y: list = field(default_factory=list)  # Prices
 
+    # Per-level counters (like _L1_leg and _L1_count but for any level)
+    current_leg: int = 0    # Overall swing number for this level (never resets)
+    current_count: int = 0  # Extremes in current direction (resets on direction change)
+    prev_direction: int = 0 # Track previous direction for count reset logic
+
+    # Per-bar indexed arrays (populated on every bar, forward-filled)
+    leg_history: list = field(default_factory=list)       # leg at bar i
+    count_history: list = field(default_factory=list)     # count at bar i
+    direction_history: list = field(default_factory=list) # direction at bar i
+
     def reset(self, bar_idx: int, origin_price: float, direction: int) -> None:
         """Reset this level to a new origin point."""
         self.high = origin_price
@@ -107,6 +117,44 @@ class WaveLevel:
     def has_retracement(self) -> bool:
         """Check if this level has any retracement (high != low)."""
         return self.low < self.high
+
+    def record_new_extreme(self, new_direction: int) -> None:
+        """
+        Call this when this level makes a new extreme (high or low).
+        Updates current_leg (always increments) and current_count (resets on direction change).
+
+        Args:
+            new_direction: +1 for new HIGH, -1 for new LOW
+        """
+        self.current_leg += 1
+        if new_direction != self.prev_direction:
+            self.current_count = 1
+        else:
+            self.current_count += 1
+        self.prev_direction = new_direction
+
+    def record_bar_state(self, bar_idx: int) -> None:
+        """
+        Record the current state to history arrays for this bar.
+        Arrays are extended/forward-filled as needed.
+        """
+        # Extend arrays to reach bar_idx, forward-filling with previous values
+        while len(self.leg_history) <= bar_idx:
+            prev_leg = self.leg_history[-1] if self.leg_history else 0
+            prev_count = self.count_history[-1] if self.count_history else 0
+            prev_dir = self.direction_history[-1] if self.direction_history else 0
+            self.leg_history.append(prev_leg)
+            self.count_history.append(prev_count)
+            self.direction_history.append(prev_dir)
+
+        # Update current bar with current values
+        self.leg_history[bar_idx] = self.current_leg
+        self.count_history[bar_idx] = self.current_count
+        self.direction_history[bar_idx] = self.direction
+
+        # Debug for L2
+        if self.level == 2 and bar_idx <= 5:
+            print(f"[RECORD] L{self.level} bar {bar_idx}: direction={self.direction}, leg={self.current_leg}, count={self.current_count}", flush=True)
 
 
 class MMLCDevEngine:
@@ -128,6 +176,19 @@ class MMLCDevEngine:
         # Each entry: (start_bar, start_price, end_bar, end_price, direction)
         self._stitch_permanent_legs: list[tuple[int, float, int, float, int]] = []
         self._prev_L1_Direction: int = 0  # Track previous direction for change detection
+
+        # Stitch mode: final waveform swing points
+        # Each entry: (bar, price, direction) where direction is +1 (UP) or -1 (DOWN)
+        # This array stores the vertices of the final stitched waveform
+        self._stitch_swings: list[tuple[int, float, int]] = []
+
+        # L1 count: tracks number of extremes in current direction
+        # Resets to 1 when direction changes, increments for each new extreme
+        self._L1_count: int = 0
+        self._prev_swing_direction: int = 0  # Track previous swing direction
+
+        # L1 leg: tracks overall L1 swing number (never resets during session)
+        self._L1_leg: int = 0
 
         # Wave levels - dynamic list that can grow to L3, L4, etc.
         # Index 0 = L1, Index 1 = L2, etc.
@@ -287,6 +348,130 @@ class MMLCDevEngine:
         self._wave_id_counter += 1
         return self._wave_id_counter
 
+    def _push_stitch_swing(self, bar: int, price: float, direction: int) -> None:
+        """
+        Push a swing point to the stitch_swings array.
+
+        Args:
+            bar: Bar index where the swing occurred
+            price: Price level of the swing
+            direction: +1 for HIGH (up swing), -1 for LOW (down swing)
+        """
+        # Update L1_leg: always increment (tracks overall swing number)
+        self._L1_leg += 1
+
+        # Update L1_count: reset to 1 on direction change, increment if same direction
+        if direction != self._prev_swing_direction:
+            self._L1_count = 1
+        else:
+            self._L1_count += 1
+        self._prev_swing_direction = direction
+
+        # Also update the L1 WaveLevel's counters for per-bar tracking
+        self.levels[0].record_new_extreme(direction)
+
+        if self._mode == "stitch":
+            self._stitch_swings.append((bar, price, direction))
+            if bar <= 1:
+                print(f"[STITCH SWING] Bar {bar}: Added swing price={price:.5f}, dir={'+1' if direction > 0 else '-1'}, total swings={len(self._stitch_swings)}", flush=True)
+
+    def _pop_stitch_swing(self) -> Optional[tuple]:
+        """
+        Pop the last swing from stitch_swings array.
+
+        Returns:
+            The popped swing tuple (bar, price, direction) or None if empty.
+        """
+        if self._mode == "stitch" and self._stitch_swings:
+            popped = self._stitch_swings.pop()
+            print(f"[STITCH POP] Removed swing: bar={popped[0]}, price={popped[1]:.5f}, dir={'+1' if popped[2] > 0 else '-1'}, remaining={len(self._stitch_swings)}", flush=True)
+            return popped
+        return None
+
+    def _get_last_stitch_bar(self) -> int:
+        """
+        Get the bar number of the most recent swing in _stitch_swings.
+
+        Returns:
+            Bar number of the most recent swing, or -1 if empty.
+        """
+        if self._stitch_swings:
+            return self._stitch_swings[-1][0]
+        return -1
+
+    def _find_child_swing_at_bar(self, bar_idx: int) -> Optional[tuple]:
+        """
+        Sequentially check L2, L3, L4... to find a level where high_bar or low_bar
+        matches the current bar.
+
+        Args:
+            bar_idx: Current bar index to match against
+
+        Returns:
+            Tuple (level_num, price, direction) if found, None otherwise.
+            direction: +1 if high_bar matched, -1 if low_bar matched
+        """
+        # Start from L2 (index 1) and check sequentially
+        for level in self.levels[1:]:  # Skip L1
+            if level.high_bar == bar_idx:
+                print(f"[STITCH FIND] Bar {bar_idx}: Found L{level.level} HIGH at {level.high:.5f}", flush=True)
+                return (level.level, level.high, +1)
+            elif level.low_bar == bar_idx:
+                print(f"[STITCH FIND] Bar {bar_idx}: Found L{level.level} LOW at {level.low:.5f}", flush=True)
+                return (level.level, level.low, -1)
+        return None
+
+    def _push_stitch_swing_child(self, bar: int, price: float, direction: int) -> None:
+        """
+        Push a child-level swing point to the stitch_swings array.
+
+        Unlike _push_stitch_swing, this does NOT increment L1_leg or L1_count
+        since these are child-level (L2+) swings, not L1 swings.
+
+        Args:
+            bar: Bar index where the swing occurred
+            price: Price level of the swing
+            direction: +1 for HIGH (up swing), -1 for LOW (down swing)
+        """
+        if self._mode == "stitch":
+            self._stitch_swings.append((bar, price, direction))
+            print(f"[STITCH CHILD] Bar {bar}: Added child swing price={price:.5f}, dir={'+1' if direction > 0 else '-1'}, total swings={len(self._stitch_swings)}", flush=True)
+
+    def _determine_bar_direction(self, candle: Candle) -> int:
+        """
+        Determine bar direction using the tiebreaker chain.
+
+        Chain priority:
+        1. close > open → +1 (bullish: LOW first, then HIGH)
+        2. close < open → -1 (bearish: HIGH first, then LOW)
+        3. close == open, above midpoint → +1 (bullish)
+        4. close == open, below midpoint → -1 (bearish)
+        5. close == open, at midpoint → follow L1_Direction
+
+        Returns:
+            +1 for bullish (LOW first → HIGH)
+            -1 for bearish (HIGH first → LOW)
+        """
+        if candle.close > candle.open:
+            return 1  # bullish
+        elif candle.close < candle.open:
+            return -1  # bearish
+        else:
+            # Doji - use midpoint
+            midpoint = (candle.high + candle.low) / 2
+            if candle.close > midpoint:
+                return 1  # bullish
+            elif candle.close < midpoint:
+                return -1  # bearish
+            else:
+                # Exact midpoint - follow L1_Direction
+                return self.L1_Direction if self.L1_Direction != 0 else 1
+
+    def _record_all_levels_bar_state(self, bar_idx: int) -> None:
+        """Record current state of all levels to their history arrays for this bar."""
+        for level in self.levels:
+            level.record_bar_state(bar_idx)
+
     def _record_stitch_direction_change(self, new_direction: int) -> None:
         """
         Record a permanent leg when L1 direction changes (for stitch mode).
@@ -386,7 +571,11 @@ class MMLCDevEngine:
         # Reset level to new origin
         # Child direction is opposite to parent
         child_direction = -parent_direction
+        if level_num == 2 and bar_idx <= 5:
+            print(f"[RESET] L{level_num} bar {bar_idx}: parent_dir={parent_direction}, child_dir={child_direction}, BEFORE reset dir={level.direction}", flush=True)
         level.reset(bar_idx, new_origin_price, child_direction)
+        if level_num == 2 and bar_idx <= 5:
+            print(f"[RESET] L{level_num} bar {bar_idx}: AFTER reset dir={level.direction}", flush=True)
 
         # Cascade: also reset the next level (L3 when L2 resets, etc.)
         # But only if next level exists and had tracking
@@ -422,12 +611,18 @@ class MMLCDevEngine:
         level = self._ensure_level_exists(level_num)
         made_new_extreme = False
 
+        if level_num == 2 and bar_idx <= 5:
+            print(f"[UPDATE L2] Bar {bar_idx}: parent_dir={parent_direction}, level.direction={level.direction}", flush=True)
+
         if parent_direction == 1:
             # Parent UP → this level retraces DOWN → track lower lows
             if candle.high <= level.high and candle.low < level.low:
                 level.low = candle.low
                 level.low_bar = bar_idx
                 made_new_extreme = True
+
+                # Record the new extreme for per-bar tracking (new LOW = -1)
+                level.record_new_extreme(-1)
 
                 # Track spline segment for visualization
                 if self._mode in ("spline", "stitch"):
@@ -441,6 +636,9 @@ class MMLCDevEngine:
                 level.high = candle.high
                 level.high_bar = bar_idx
                 made_new_extreme = True
+
+                # Record the new extreme for per-bar tracking (new HIGH = +1)
+                level.record_new_extreme(+1)
 
                 # Track spline segment for visualization
                 if self._mode in ("spline", "stitch"):
@@ -503,7 +701,11 @@ class MMLCDevEngine:
 
         # Reset stitch mode state
         self._stitch_permanent_legs = []
+        self._stitch_swings = []
         self._prev_L1_Direction = 0
+        self._L1_count = 0
+        self._prev_swing_direction = 0
+        self._L1_leg = 0
 
         # Reset all wave levels
         self.levels = [
@@ -534,6 +736,9 @@ class MMLCDevEngine:
             else:
                 # Subsequent bars: Update L1_High/L1_Low
                 self._process_bar(candle, bar_idx)
+
+            # Record per-bar state for all levels
+            self._record_all_levels_bar_state(bar_idx)
 
         # Add developing leg: from last swing point to current extreme
         self._add_developing_leg(end_bar)
@@ -584,37 +789,30 @@ class MMLCDevEngine:
         """
         Rule 1: Initialize L1 state on the first bar.
 
-        Step 1: Determine direction from close/open relationship
-        Step 2: Check if preswing is needed (skip if open equals the natural starting extreme)
-        Step 3: Push swing point (low if UP, high if DOWN)
+        Uses the direction chain to determine bar direction:
+        1. close > open → bullish (LOW first → HIGH)
+        2. close < open → bearish (HIGH first → LOW)
+        3. close == open, above midpoint → bullish
+        4. close == open, below midpoint → bearish
+        5. close == open, at midpoint → default to bullish (L1_Direction=0 at bar 0)
         """
-        # Step 1: Determine L1_Direction from close/open relationship
-        if candle.close > candle.open:
-            self.L1_Direction = 1  # UP
-        elif candle.close < candle.open:
-            self.L1_Direction = -1  # DOWN
-        else:
-            # Doji: close == open, use midpoint to decide
-            midpoint = (candle.high + candle.low) / 2
-            if candle.close < midpoint:
-                self.L1_Direction = -1  # DOWN
-            elif candle.close > midpoint:
-                self.L1_Direction = 1  # UP
-            else:
-                # Dead center - default to UP for first bar
-                self.L1_Direction = 1
+        # Step 1: Use direction chain to determine bar direction
+        bar_direction = self._determine_bar_direction(candle)
+        self.L1_Direction = bar_direction  # +1 for bullish (UP), -1 for bearish (DOWN)
+
+        print(f"[FIRST BAR] Bar {bar_idx}: direction={'+1 (bullish)' if bar_direction == 1 else '-1 (bearish)'}, O={candle.open:.5f}, H={candle.high:.5f}, L={candle.low:.5f}, C={candle.close:.5f}", flush=True)
 
         # Initialize previous direction tracker for stitch mode
         self._prev_L1_Direction = self.L1_Direction
 
         # Step 2: Check if we need the artificial preswing at index -1
         # Skip preswing if:
-        # - UP bar and open == low (bar naturally starts at its low)
-        # - DOWN bar and open == high (bar naturally starts at its high)
+        # - Bullish bar and open == low (bar naturally starts at its low)
+        # - Bearish bar and open == high (bar naturally starts at its high)
         needs_preswing = True
-        if self.L1_Direction == 1 and candle.open == candle.low:
+        if bar_direction == 1 and candle.open == candle.low:
             needs_preswing = False
-        elif self.L1_Direction == -1 and candle.open == candle.high:
+        elif bar_direction == -1 and candle.open == candle.high:
             needs_preswing = False
 
         if needs_preswing:
@@ -623,12 +821,12 @@ class MMLCDevEngine:
             self.L1_swing_y.append(candle.open)
 
         # Step 3: Push swing point based on direction
-        if self.L1_Direction == 1:
-            # UP direction: swing LOW at bar 0
+        if bar_direction == 1:
+            # Bullish: first swing is LOW at bar 0
             self.L1_swing_x.append(bar_idx)
             self.L1_swing_y.append(candle.low)
         else:
-            # DOWN direction: swing HIGH at bar 0
+            # Bearish: first swing is HIGH at bar 0
             self.L1_swing_x.append(bar_idx)
             self.L1_swing_y.append(candle.high)
 
@@ -638,23 +836,47 @@ class MMLCDevEngine:
         self.L1_High_bar = bar_idx
         self.L1_Low_bar = bar_idx
 
+        # Push stitch swings for first bar
+        # For a complete waveform starting from open, we need:
+        # 1. OPEN (anchor point - doesn't count as a real swing for leg/count)
+        # 2. First extreme based on direction chain
+        # 3. Second extreme (opposite)
+        if self._mode == "stitch":
+            # Add OPEN anchor at bar -1
+            self._stitch_swings.append((-1, candle.open, 0))
+            print(f"[STITCH SWING] Bar -1: Added OPEN anchor price={candle.open:.5f}, total swings={len(self._stitch_swings)}", flush=True)
+
+        if bar_direction == 1:
+            # Bullish: OPEN -> LOW -> HIGH
+            self._push_stitch_swing(bar_idx, candle.low, -1)
+            self._push_stitch_swing(bar_idx, candle.high, +1)
+        else:
+            # Bearish: OPEN -> HIGH -> LOW
+            self._push_stitch_swing(bar_idx, candle.high, +1)
+            self._push_stitch_swing(bar_idx, candle.low, -1)
+
         # Initialize L2: starts from the L1 extreme in the current direction
+        # L2 direction is opposite to L1 (L2 tracks retracements)
         if self.L1_Direction == 1:
-            # UP direction: L2 tracks retracement from the high
+            # UP direction: L2 tracks retracement from the high (L2 goes DOWN)
             self.L2_High = candle.high
             self.L2_Low = candle.high  # Same initially (no retracement yet)
             self.L2_High_bar = bar_idx
             self.L2_Low_bar = bar_idx
             self.L2_origin_bar = bar_idx
             self.L2_origin_price = candle.high
+            self.levels[1].direction = -1  # L2 is DOWN when L1 is UP
+            print(f"[INIT] Bar {bar_idx}: L1=UP, set L2 direction=-1, levels[1].direction={self.levels[1].direction}", flush=True)
         else:
-            # DOWN direction: L2 tracks retracement from the low
+            # DOWN direction: L2 tracks retracement from the low (L2 goes UP)
             self.L2_High = candle.low  # Same initially
             self.L2_Low = candle.low
             self.L2_High_bar = bar_idx
             self.L2_Low_bar = bar_idx
             self.L2_origin_bar = bar_idx
             self.L2_origin_price = candle.low
+            self.levels[1].direction = 1  # L2 is UP when L1 is DOWN
+            print(f"[INIT] Bar {bar_idx}: L1=DOWN, set L2 direction=1, levels[1].direction={self.levels[1].direction}", flush=True)
 
     def _process_bar(self, candle: Candle, bar_idx: int) -> None:
         """
@@ -662,6 +884,13 @@ class MMLCDevEngine:
         """
         # Store old direction to detect L1 reversals
         old_L1_direction = self.L1_Direction
+
+        # Debug: Show values being compared for first 5 bars
+        if bar_idx <= 5:
+            print(f"[CASE EVAL] Bar {bar_idx}: L1_Dir={self.L1_Direction}, H={candle.high:.5f}, L={candle.low:.5f}, L1_H={self.L1_High:.5f}, L1_L={self.L1_Low:.5f}", flush=True)
+            print(f"  Case1(UP cont): H>L1_H={candle.high > self.L1_High}, L>=L1_L={candle.low >= self.L1_Low}", flush=True)
+            print(f"  Case2(UP rev):  L<L1_L={candle.low < self.L1_Low}, H<=L1_H={candle.high <= self.L1_High}", flush=True)
+            print(f"  Case3(outside): H>L1_H={candle.high > self.L1_High}, L<L1_L={candle.low < self.L1_Low}", flush=True)
 
         if self.L1_Direction == 1:
             # UP direction rules
@@ -680,6 +909,9 @@ class MMLCDevEngine:
                 self.L1_High = candle.high
                 self.L1_High_bar = bar_idx
 
+                # Push new L1 HIGH to stitch swings
+                self._push_stitch_swing(bar_idx, candle.high, +1)
+
             elif candle.low < self.L1_Low and candle.high <= self.L1_High:
                 # Case 2: New low, no new high - reversal
                 # Push swing high to array (confirms the high)
@@ -690,20 +922,33 @@ class MMLCDevEngine:
                     self.L1_spline_segments.append((self.L1_High_bar, self.L1_High, bar_idx, candle.low))
 
                 # L2: Complete current L2 wave and reset to new direction's extreme
-                self._complete_and_reset_L2(bar_idx, candle.low)
+                # Pass NEW direction (-1) because L1 is reversing from UP to DOWN
+                self._complete_and_reset_L2(bar_idx, candle.low, new_parent_direction=-1)
 
                 # Update L1_Low to new low
                 self.L1_Low = candle.low
                 self.L1_Low_bar = bar_idx
+
+                # Push new L1 LOW to stitch swings
+                self._push_stitch_swing(bar_idx, candle.low, -1)
+
                 # Direction changes to DOWN
                 self._record_stitch_direction_change(-1)
                 self.L1_Direction = -1
 
             elif candle.high > self.L1_High and candle.low < self.L1_Low:
                 # Case 3: Outside bar - both new high and new low
-                if candle.close > candle.open:
-                    # Bullish bar: low happened first
-                    # Push swing low to array
+                # Use direction chain to determine swing order
+                bar_direction = self._determine_bar_direction(candle)
+
+                print(f"[OUTSIDE BAR] Bar {bar_idx} (L1=UP): direction={'+1 (bullish)' if bar_direction == 1 else '-1 (bearish)'}", flush=True)
+
+                # POP the previous developing swing (the L1_High that's being replaced)
+                self._pop_stitch_swing()
+
+                if bar_direction == 1:
+                    # Bullish: LOW happened first, then HIGH
+                    # Push swing low to L1 arrays
                     self.L1_swing_x.append(bar_idx)
                     self.L1_swing_y.append(candle.low)
 
@@ -716,59 +961,55 @@ class MMLCDevEngine:
                     self.L1_High = candle.high
                     self.L1_High_bar = bar_idx
 
-                elif candle.close < candle.open:
-                    # Bearish bar: high happened first
-                    # Push swing high to array
+                    # PUSH both swings: LOW first, then HIGH
+                    self._push_stitch_swing(bar_idx, candle.low, -1)
+                    self._push_stitch_swing(bar_idx, candle.high, +1)
+
+                else:
+                    # Bearish: HIGH happened first, then LOW
+                    # Push swing high to L1 arrays
                     self.L1_swing_x.append(bar_idx)
                     self.L1_swing_y.append(candle.high)
 
                     # L2: Reset to the new low (final extreme after outside bar)
-                    self._complete_and_reset_L2(bar_idx, candle.low)
+                    # Pass NEW direction (-1) because L1 is reversing to DOWN
+                    self._complete_and_reset_L2(bar_idx, candle.low, new_parent_direction=-1)
 
                     # Update both extremes
                     self.L1_High = candle.high
                     self.L1_High_bar = bar_idx
                     self.L1_Low = candle.low
                     self.L1_Low_bar = bar_idx
+
+                    # PUSH both swings: HIGH first, then LOW
+                    self._push_stitch_swing(bar_idx, candle.high, +1)
+                    self._push_stitch_swing(bar_idx, candle.low, -1)
+
                     # Direction changes to DOWN
                     self._record_stitch_direction_change(-1)
                     self.L1_Direction = -1
 
-                else:
-                    # Doji: use midpoint to determine which happened first
-                    midpoint = (candle.high + candle.low) / 2
-                    if candle.close >= midpoint:
-                        # Above midpoint: treat as bullish (low first)
-                        self.L1_swing_x.append(bar_idx)
-                        self.L1_swing_y.append(candle.low)
-
-                        # L2: Reset to the new high
-                        self._complete_and_reset_L2(bar_idx, candle.high)
-
-                        self.L1_Low = candle.low
-                        self.L1_Low_bar = bar_idx
-                        self.L1_High = candle.high
-                        self.L1_High_bar = bar_idx
-                    else:
-                        # Below midpoint: treat as bearish (high first)
-                        self.L1_swing_x.append(bar_idx)
-                        self.L1_swing_y.append(candle.high)
-
-                        # L2: Reset to the new low
-                        self._complete_and_reset_L2(bar_idx, candle.low)
-
-                        self.L1_High = candle.high
-                        self.L1_High_bar = bar_idx
-                        self.L1_Low = candle.low
-                        self.L1_Low_bar = bar_idx
-                        # Direction changes to DOWN
-                        self._record_stitch_direction_change(-1)
-                        self.L1_Direction = -1
-
             else:
                 # No new L1 extreme - this is a pullback bar
                 # L2: Track retracement (L1 is UP, track lower lows)
+                if bar_idx <= 5:
+                    print(f"[PULLBACK] Bar {bar_idx}: L1=UP, calling _update_L2_pullback", flush=True)
                 self._update_L2_pullback(candle, bar_idx)
+
+                # Stitch mode: Check if a child level made an extreme this bar
+                if self._mode == "stitch":
+                    last_stitch_bar = self._get_last_stitch_bar()
+                    if last_stitch_bar < bar_idx:
+                        # Most recent swing is behind current bar - check child levels
+                        child_swing = self._find_child_swing_at_bar(bar_idx)
+                        if child_swing:
+                            level_num, price, direction = child_swing
+                            # Get the level that made this swing
+                            level = self._get_level(level_num)
+                            # If count > 1, this is a continuation - pop old swing first
+                            if level and level.current_count > 1:
+                                self._pop_stitch_swing()
+                            self._push_stitch_swing_child(bar_idx, price, direction)
 
         elif self.L1_Direction == -1:
             # DOWN direction rules (mirrored from UP)
@@ -787,6 +1028,9 @@ class MMLCDevEngine:
                 self.L1_Low = candle.low
                 self.L1_Low_bar = bar_idx
 
+                # Push new L1 LOW to stitch swings
+                self._push_stitch_swing(bar_idx, candle.low, -1)
+
             elif candle.high > self.L1_High and candle.low >= self.L1_Low:
                 # Case 2: New high, no new low - reversal
                 # Push swing low to array (confirms the low)
@@ -797,42 +1041,62 @@ class MMLCDevEngine:
                     self.L1_spline_segments.append((self.L1_Low_bar, self.L1_Low, bar_idx, candle.high))
 
                 # L2: Complete current L2 wave and reset to new direction's extreme
-                self._complete_and_reset_L2(bar_idx, candle.high)
+                # Pass NEW direction (+1) because L1 is reversing from DOWN to UP
+                self._complete_and_reset_L2(bar_idx, candle.high, new_parent_direction=+1)
 
                 # Update L1_High to new high
                 self.L1_High = candle.high
                 self.L1_High_bar = bar_idx
+
+                # Push new L1 HIGH to stitch swings
+                self._push_stitch_swing(bar_idx, candle.high, +1)
+
                 # Direction changes to UP
                 self._record_stitch_direction_change(1)
                 self.L1_Direction = 1
 
             elif candle.high > self.L1_High and candle.low < self.L1_Low:
                 # Case 3: Outside bar - both new high and new low
-                if candle.close > candle.open:
-                    # Bullish bar: low happened first
-                    # Push swing low to array
+                # Use direction chain to determine swing order
+                bar_direction = self._determine_bar_direction(candle)
+
+                print(f"[OUTSIDE BAR] Bar {bar_idx} (L1=DOWN): direction={'+1 (bullish)' if bar_direction == 1 else '-1 (bearish)'}", flush=True)
+
+                # POP the previous developing swing (the L1_Low that's being replaced)
+                self._pop_stitch_swing()
+
+                if bar_direction == 1:
+                    # Bullish: LOW happened first, then HIGH
+                    # Push swing low to L1 arrays
                     self.L1_swing_x.append(bar_idx)
                     self.L1_swing_y.append(candle.low)
 
                     # L2: Reset to the new high (final extreme after outside bar)
-                    self._complete_and_reset_L2(bar_idx, candle.high)
+                    # Pass NEW direction (+1) because L1 is reversing to UP
+                    self._complete_and_reset_L2(bar_idx, candle.high, new_parent_direction=+1)
 
                     # Update both extremes
                     self.L1_Low = candle.low
                     self.L1_Low_bar = bar_idx
                     self.L1_High = candle.high
                     self.L1_High_bar = bar_idx
+
+                    # PUSH both swings: LOW first, then HIGH
+                    self._push_stitch_swing(bar_idx, candle.low, -1)
+                    self._push_stitch_swing(bar_idx, candle.high, +1)
+
                     # Direction changes to UP
                     self._record_stitch_direction_change(1)
                     self.L1_Direction = 1
 
-                elif candle.close < candle.open:
-                    # Bearish bar: high happened first
-                    # Push swing high to array
+                else:
+                    # Bearish: HIGH happened first, then LOW
+                    # Push swing high to L1 arrays
                     self.L1_swing_x.append(bar_idx)
                     self.L1_swing_y.append(candle.high)
 
                     # L2: Reset to the new low (final extreme after outside bar)
+                    # No direction change (stays DOWN)
                     self._complete_and_reset_L2(bar_idx, candle.low)
 
                     # Update both extremes
@@ -840,59 +1104,88 @@ class MMLCDevEngine:
                     self.L1_High_bar = bar_idx
                     self.L1_Low = candle.low
                     self.L1_Low_bar = bar_idx
+
+                    # PUSH both swings: HIGH first, then LOW
+                    self._push_stitch_swing(bar_idx, candle.high, +1)
+                    self._push_stitch_swing(bar_idx, candle.low, -1)
+
                     # Stay DOWN
-
-                else:
-                    # Doji: use midpoint to determine which happened first
-                    midpoint = (candle.high + candle.low) / 2
-                    if candle.close >= midpoint:
-                        # Above midpoint: treat as bullish (low first)
-                        self.L1_swing_x.append(bar_idx)
-                        self.L1_swing_y.append(candle.low)
-
-                        # L2: Reset to the new high
-                        self._complete_and_reset_L2(bar_idx, candle.high)
-
-                        self.L1_Low = candle.low
-                        self.L1_Low_bar = bar_idx
-                        self.L1_High = candle.high
-                        self.L1_High_bar = bar_idx
-                        # Direction changes to UP
-                        self._record_stitch_direction_change(1)
-                        self.L1_Direction = 1
-                    else:
-                        # Below midpoint: treat as bearish (high first)
-                        self.L1_swing_x.append(bar_idx)
-                        self.L1_swing_y.append(candle.high)
-
-                        # L2: Reset to the new low
-                        self._complete_and_reset_L2(bar_idx, candle.low)
-
-                        self.L1_High = candle.high
-                        self.L1_High_bar = bar_idx
-                        self.L1_Low = candle.low
-                        self.L1_Low_bar = bar_idx
-                        # Stay DOWN
 
             else:
                 # No new L1 extreme - this is a pullback bar
                 # L2: Track retracement (L1 is DOWN, track higher highs)
+                if bar_idx <= 5:
+                    print(f"[PULLBACK] Bar {bar_idx}: L1=DOWN, calling _update_L2_pullback", flush=True)
                 self._update_L2_pullback(candle, bar_idx)
 
-    def _complete_and_reset_L2(self, bar_idx: int, new_l2_origin_price: float) -> None:
+                # Stitch mode: Check if a child level made an extreme this bar
+                if self._mode == "stitch":
+                    last_stitch_bar = self._get_last_stitch_bar()
+                    if last_stitch_bar < bar_idx:
+                        # Most recent swing is behind current bar - check child levels
+                        child_swing = self._find_child_swing_at_bar(bar_idx)
+                        if child_swing:
+                            level_num, price, direction = child_swing
+                            # Get the level that made this swing
+                            level = self._get_level(level_num)
+                            # If count > 1, this is a continuation - pop old swing first
+                            if level and level.current_count > 1:
+                                self._pop_stitch_swing()
+                            self._push_stitch_swing_child(bar_idx, price, direction)
+
+    def _complete_and_reset_L2(self, bar_idx: int, new_l2_origin_price: float, new_parent_direction: int = None) -> None:
         """
         Complete current L2 wave (if there was retracement) and reset L2 to new origin.
 
         Called when L1 makes a new extreme (continuation, reversal, or outside bar).
         Now delegates to the generic _complete_and_reset_level method.
+
+        Args:
+            bar_idx: Current bar index
+            new_l2_origin_price: Price at the new L2 origin
+            new_parent_direction: Direction to use for NEW L2 wave. If None, uses current L1_Direction.
+                                  Pass explicitly for reversals where L1 direction changes AFTER this call.
         """
-        # Delegate to generic method, which handles L2 and cascades to L3+
-        self._complete_and_reset_level(
-            level_num=2,
-            bar_idx=bar_idx,
-            new_origin_price=new_l2_origin_price,
-            parent_direction=self.L1_Direction
-        )
+        # For completion, use CURRENT L1_Direction (to save correct extreme from old wave)
+        old_parent_direction = self.L1_Direction
+
+        # For new wave direction, use provided direction or default to current
+        if new_parent_direction is None:
+            new_parent_direction = self.L1_Direction
+
+        # Complete old wave using OLD direction
+        level = self._ensure_level_exists(2)
+        if level.has_retracement():
+            if old_parent_direction == 1:
+                # Parent was UP, L2 was tracking DOWN → save LOW
+                level.completed_waves.append((
+                    level.origin_bar, level.origin_price,
+                    level.low_bar, level.low
+                ))
+            else:
+                # Parent was DOWN, L2 was tracking UP → save HIGH
+                level.completed_waves.append((
+                    level.origin_bar, level.origin_price,
+                    level.high_bar, level.high
+                ))
+
+        # Reset L2 with NEW direction
+        child_direction = -new_parent_direction
+        if bar_idx <= 5:
+            print(f"[RESET L2] bar {bar_idx}: old_parent={old_parent_direction}, new_parent={new_parent_direction}, child_dir={child_direction}, BEFORE dir={level.direction}", flush=True)
+        level.reset(bar_idx, new_l2_origin_price, child_direction)
+        if bar_idx <= 5:
+            print(f"[RESET L2] bar {bar_idx}: AFTER dir={level.direction}", flush=True)
+
+        # Cascade to L3+ using the NEW direction
+        next_level = self._get_level(3)
+        if next_level is not None and next_level.has_retracement():
+            self._complete_and_reset_level(
+                3,
+                bar_idx,
+                new_l2_origin_price,
+                child_direction
+            )
 
     def _update_L2_pullback(self, candle: Candle, bar_idx: int) -> None:
         """
@@ -1702,7 +1995,8 @@ class MMLCDevEngine:
         """
         Build custom display waves for stitch mode.
 
-        Only shows permanent L1 legs - recorded at the moment of direction change.
+        Draws lines connecting consecutive points in _stitch_swings array.
+        Each swing is (bar, price, direction).
         """
         from datetime import timedelta
         import sys
@@ -1710,40 +2004,59 @@ class MMLCDevEngine:
         waves: list[Wave] = []
 
         # Debug output
-        print(f"\n[STITCH] Bar {end_bar}: {len(self._stitch_permanent_legs)} permanent legs", file=sys.stderr)
+        print(f"\n[STITCH] Bar {end_bar}: {len(self._stitch_swings)} swings in array", file=sys.stderr)
+        for i, (bar, price, direction) in enumerate(self._stitch_swings):
+            dir_str = '+1' if direction > 0 else ('-1' if direction < 0 else '0')
+            print(f"  [{i}] bar={bar}, price={price:.5f}, dir={dir_str}", file=sys.stderr)
 
-        # Only show permanent legs (recorded on direction change)
-        for i, (start_bar, start_price, end_bar_leg, end_price, direction) in enumerate(self._stitch_permanent_legs):
+        # Need at least 2 points to draw a line
+        if len(self._stitch_swings) < 2:
+            return waves
+
+        # Draw lines between consecutive swing points
+        for i in range(len(self._stitch_swings) - 1):
+            bar1, price1, _ = self._stitch_swings[i]
+            bar2, price2, _ = self._stitch_swings[i + 1]
+
             # Get timestamp for start point
-            if start_bar < 0:
+            if bar1 < 0:
                 if len(self._candles) >= 2:
                     interval = self._candles[1].timestamp - self._candles[0].timestamp
                 else:
                     interval = timedelta(minutes=10)
                 start_time = self._candles[0].timestamp - interval
             else:
-                start_time = self._candles[min(start_bar, len(self._candles) - 1)].timestamp
+                start_time = self._candles[min(bar1, len(self._candles) - 1)].timestamp
 
             # Get timestamp for end point
-            end_time = self._candles[min(end_bar_leg, len(self._candles) - 1)].timestamp
+            if bar2 < 0:
+                if len(self._candles) >= 2:
+                    interval = self._candles[1].timestamp - self._candles[0].timestamp
+                else:
+                    interval = timedelta(minutes=10)
+                end_time = self._candles[0].timestamp - interval
+            else:
+                end_time = self._candles[min(bar2, len(self._candles) - 1)].timestamp
 
-            wave_direction = Direction.UP if direction == 1 else Direction.DOWN
+            # Determine direction from price movement
+            wave_direction = Direction.UP if price2 > price1 else Direction.DOWN
 
             wave = Wave(
-                id=6000 + i,  # Stitch permanent leg IDs
+                id=6000 + i,  # Stitch swing line IDs
                 level=1,  # Yellow (L1)
                 direction=wave_direction,
                 start_time=start_time,
-                start_price=start_price,
+                start_price=price1,
                 end_time=end_time,
-                end_price=end_price,
+                end_price=price2,
                 parent_id=None,
                 is_active=True,
                 is_spline=False,  # SOLID line
             )
             waves.append(wave)
-            print(f"  Leg {i}: bar {start_bar} ({start_price:.5f}) -> bar {end_bar_leg} ({end_price:.5f}) [{'UP' if direction == 1 else 'DOWN'}]", file=sys.stderr)
+            print(f"  Line {i}: bar {bar1} ({price1:.5f}) -> bar {bar2} ({price2:.5f})", file=sys.stderr)
 
+        print(f"[STITCH] Generated {len(waves)} wave lines", file=sys.stderr)
         return waves
 
     def _print_wave_state_debug(self, end_bar: int) -> None:
@@ -1825,6 +2138,13 @@ class MMLCDevEngine:
                     {"start_bar": sb, "start_price": sp, "end_bar": eb, "end_price": ep}
                     for sb, sp, eb, ep in level.spline_segments
                 ],
+                # Per-bar indexed arrays
+                "leg_history": level.leg_history,
+                "count_history": level.count_history,
+                "direction_history": level.direction_history,
+                # Current counters
+                "current_leg": level.current_leg,
+                "current_count": level.current_count,
             }
             # Add swing points for L1
             if level.level == 1:
@@ -1843,8 +2163,14 @@ class MMLCDevEngine:
                 {"start_bar": sb, "start_price": sp, "end_bar": eb, "end_price": ep, "direction": "UP" if d == 1 else "DOWN"}
                 for sb, sp, eb, ep, d in self._stitch_permanent_legs
             ],
+            "stitch_swings": [
+                {"bar": bar, "price": price, "direction": d}
+                for bar, price, d in self._stitch_swings
+            ],
             "prev_L1_Direction": "UP" if self._prev_L1_Direction == 1 else ("DOWN" if self._prev_L1_Direction == -1 else "NONE"),
             "num_waves_returned": len(self._waves) if hasattr(self, '_waves') else 0,
+            "L1_count": self._L1_count,
+            "L1_leg": self._L1_leg,
         }
 
     # ================================================================
