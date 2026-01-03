@@ -929,6 +929,10 @@ class MMLCDevEngine:
                 self.L1_Low = candle.low
                 self.L1_Low_bar = bar_idx
 
+                # Stitch mode: If last swing is same direction (-1), it's a child swing - pop it
+                if self._mode == "stitch" and self._stitch_swings and self._stitch_swings[-1][2] == -1:
+                    self._pop_stitch_swing()
+
                 # Push new L1 LOW to stitch swings
                 self._push_stitch_swing(bar_idx, candle.low, -1)
 
@@ -1047,6 +1051,10 @@ class MMLCDevEngine:
                 # Update L1_High to new high
                 self.L1_High = candle.high
                 self.L1_High_bar = bar_idx
+
+                # Stitch mode: If last swing is same direction (+1), it's a child swing - pop it
+                if self._mode == "stitch" and self._stitch_swings and self._stitch_swings[-1][2] == +1:
+                    self._pop_stitch_swing()
 
                 # Push new L1 HIGH to stitch swings
                 self._push_stitch_swing(bar_idx, candle.high, +1)
