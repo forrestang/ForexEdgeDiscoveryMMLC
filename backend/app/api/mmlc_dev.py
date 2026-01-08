@@ -60,10 +60,73 @@ class DebugState(BaseModel):
     levels: list[dict]  # All wave levels (L1, L2, L3, etc.) with all their properties
     stitch_permanent_legs: list[dict]
     stitch_swings: list[dict] = []  # Swing points: bar, price, direction (+1/-1)
+    stitch_swings_level: list[int] = []  # Parallel array: level each swing originated from (0=OPEN, 1=L1, 2=L2, etc.)
     prev_L1_Direction: str
     num_waves_returned: int
     L1_count: int = 0  # Number of extremes in current L1 direction
     L1_leg: int = 0  # Overall L1 swing number (never resets)
+
+
+class MMLCSwingData(BaseModel):
+    """A single swing point (vertex) in the waveform for mmlcOut."""
+    bar: int              # Bar index (-1 for preswing)
+    price: float          # Price at swing point
+    direction: int        # +1 (HIGH), -1 (LOW), 0 (OPEN anchor)
+    level: int            # Wave level (0=OPEN, 1=L1, 2=L2, etc.)
+
+
+class MMLCLegData(BaseModel):
+    """A single leg in the waveform history for mmlcOut (deprecated)."""
+    start_bar: int
+    start_price: float
+    end_bar: int
+    end_price: float
+    level: int
+    direction: int  # +1 or -1
+    is_developing: bool
+
+
+class MMLCBarData(BaseModel):
+    """MMLC state captured at a single bar for mmlcOut."""
+    bar_index: int
+    session_open_price: float
+    total_session_bars: int
+    current_close: float
+    swings: list[MMLCSwingData] = []  # Primary output - swing array
+    legs: list[MMLCLegData] = []       # Deprecated
+
+
+# LSTM Output Models
+class LSTMVectorData(BaseModel):
+    """Vector features for LSTM input."""
+    price_raw: float
+    price_delta: float
+    time_delta: int
+
+
+class LSTMStateData(BaseModel):
+    """State classification for LSTM."""
+    level: int
+    direction: str  # "UP" or "DOWN"
+    event: str      # "EXTENSION", "RETRACEMENT", or "REVERSAL"
+
+
+class LSTMOutcomeData(BaseModel):
+    """Forward-looking outcome for supervised training."""
+    next_bar_delta: float      # Close[T+1] - Close[T]
+    session_close_delta: float # Close[SessionEnd] - Close[T]
+    session_max_up: float      # MFE: Max(High[T...End]) - Close[T]
+    session_max_down: float    # MAE: Min(Low[T...End]) - Close[T] (negative)
+
+
+class LSTMBarPayloadData(BaseModel):
+    """LSTM-focused output for each bar."""
+    sequence_id: int
+    timestamp: str
+    total_session_bars: int
+    vector: LSTMVectorData
+    state: LSTMStateData
+    outcome: Optional[LSTMOutcomeData] = None
 
 
 class DevRunResponse(BaseModel):
@@ -75,6 +138,8 @@ class DevRunResponse(BaseModel):
     annotations: list[StitchAnnotation] = []
     swing_labels: list[SwingLabelData] = []
     debug_state: Optional[DebugState] = None
+    mmlc_out: list[MMLCBarData] = []  # Autoencoder training data
+    lstm_out: list[LSTMBarPayloadData] = []  # LSTM training data
 
 
 @router.get("/session/{pair}", response_model=DevSessionResponse)
@@ -254,6 +319,70 @@ async def run_dev_engine(
     # Get debug state from engine
     debug_state = DebugState(**engine.get_debug_state(end_bar))
 
+    # Convert mmlcOut to response format
+    mmlc_out_data = []
+    print(f"[MMLC_OUT API] engine.mmlc_out has {len(engine.mmlc_out)} snapshots", flush=True)
+    for snapshot in engine.mmlc_out:
+        mmlc_out_data.append(
+            MMLCBarData(
+                bar_index=snapshot.bar_index,
+                session_open_price=snapshot.session_open_price,
+                total_session_bars=snapshot.total_session_bars,
+                current_close=snapshot.current_close,
+                swings=[
+                    MMLCSwingData(
+                        bar=swing.bar,
+                        price=swing.price,
+                        direction=swing.direction,
+                        level=swing.level,
+                    )
+                    for swing in snapshot.swings
+                ],
+                legs=[
+                    MMLCLegData(
+                        start_bar=leg.start_bar,
+                        start_price=leg.start_price,
+                        end_bar=leg.end_bar,
+                        end_price=leg.end_price,
+                        level=leg.level,
+                        direction=leg.direction,
+                        is_developing=leg.is_developing,
+                    )
+                    for leg in snapshot.legs
+                ]
+            )
+        )
+
+    # Convert lstm_out to response format
+    lstm_out_data = []
+    for payload in engine.lstm_out:
+        outcome_data = None
+        if payload.outcome is not None:
+            outcome_data = LSTMOutcomeData(
+                next_bar_delta=payload.outcome.next_bar_delta,
+                session_close_delta=payload.outcome.session_close_delta,
+                session_max_up=payload.outcome.session_max_up,
+                session_max_down=payload.outcome.session_max_down,
+            )
+        lstm_out_data.append(
+            LSTMBarPayloadData(
+                sequence_id=payload.sequence_id,
+                timestamp=payload.timestamp,
+                total_session_bars=payload.total_session_bars,
+                vector=LSTMVectorData(
+                    price_raw=payload.price_raw,
+                    price_delta=payload.price_delta,
+                    time_delta=payload.time_delta,
+                ),
+                state=LSTMStateData(
+                    level=payload.level,
+                    direction=payload.direction,
+                    event=payload.event,
+                ),
+                outcome=outcome_data,
+            )
+        )
+
     return DevRunResponse(
         waves=wave_data,
         start_bar=start_bar,
@@ -262,4 +391,6 @@ async def run_dev_engine(
         annotations=annotations,
         swing_labels=swing_labels,
         debug_state=debug_state,
+        mmlc_out=mmlc_out_data,
+        lstm_out=lstm_out_data,
     )

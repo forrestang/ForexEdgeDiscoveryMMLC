@@ -147,6 +147,15 @@ export function useCurrentPage() {
 }
 
 /**
+ * Main navigation tab persistence
+ */
+export type MainTabType = 'ae-knn' | 'stpm' | 'sandbox'
+
+export function useMainTab() {
+  return usePersistedState<MainTabType>('mainTab', 'ae-knn')
+}
+
+/**
  * MMLC Dev Sandbox settings persistence
  */
 export interface MMLCDevSettings {

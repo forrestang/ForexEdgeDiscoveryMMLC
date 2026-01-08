@@ -1,8 +1,12 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { AppLayout } from '@/components/layout/AppLayout'
+import { TopNavigation } from '@/components/layout/TopNavigation'
 import { MMLCDevPage } from '@/pages/MMLCDevPage'
+import { LSTMPage } from '@/pages/LSTMPage'
+import { STPMPage } from '@/pages/STPMPage'
 import { DebugPanelPage } from '@/pages/DebugPanelPage'
-import { useKNeighbors, useCurrentPage } from '@/hooks/usePersistedSettings'
+import { StatsPanelPage } from '@/pages/StatsPanelPage'
+import { useKNeighbors, useMainTab } from '@/hooks/usePersistedSettings'
 import type { SessionType, TimeframeType, EdgeProbabilities } from '@/types'
 import { DEFAULT_WORKING_DIRECTORY } from '@/lib/constants'
 
@@ -14,11 +18,13 @@ export interface ChartSettings {
 }
 
 function App() {
-  // Check URL params for debug-panel page (used by popup window)
+  // Check URL params for popup pages
   const urlParams = new URLSearchParams(window.location.search)
-  const isDebugPanel = urlParams.get('page') === 'debug-panel'
+  const pageParam = urlParams.get('page')
+  const isDebugPanel = pageParam === 'debug-panel'
+  const isStatsPanel = pageParam === 'stats-panel'
 
-  const [currentPage, setCurrentPage] = useCurrentPage()
+  const [activeTab, setActiveTab] = useMainTab()
   const [workingDirectory, setWorkingDirectory] = useState(DEFAULT_WORKING_DIRECTORY)
   const [chartSettings, setChartSettings] = useState<ChartSettings>({
     pair: null,
@@ -31,31 +37,51 @@ function App() {
   const [totalBars, setTotalBars] = useState<number | null>(null)
   const [kNeighbors, setKNeighbors] = useKNeighbors()
 
-  // Debug panel popup window
+  // Popup windows
   if (isDebugPanel) {
     return <DebugPanelPage />
   }
+  if (isStatsPanel) {
+    return <StatsPanelPage />
+  }
 
-  if (currentPage === 'mmlc-dev') {
-    return <MMLCDevPage onBack={() => setCurrentPage('main')} />
+  const renderContent = () => {
+    switch (activeTab) {
+      case 'ae-knn':
+        return (
+          <AppLayout
+            workingDirectory={workingDirectory}
+            setWorkingDirectory={setWorkingDirectory}
+            chartSettings={chartSettings}
+            setChartSettings={setChartSettings}
+            edgeProbabilities={edgeProbabilities}
+            setEdgeProbabilities={setEdgeProbabilities}
+            selectedBarIndex={selectedBarIndex}
+            setSelectedBarIndex={setSelectedBarIndex}
+            totalBars={totalBars}
+            setTotalBars={setTotalBars}
+            kNeighbors={kNeighbors}
+            setKNeighbors={setKNeighbors}
+          />
+        )
+      case 'lstm':
+        return <LSTMPage />
+      case 'stpm':
+        return <STPMPage />
+      case 'sandbox':
+        return <MMLCDevPage />
+      default:
+        return null
+    }
   }
 
   return (
-    <AppLayout
-      workingDirectory={workingDirectory}
-      setWorkingDirectory={setWorkingDirectory}
-      chartSettings={chartSettings}
-      setChartSettings={setChartSettings}
-      edgeProbabilities={edgeProbabilities}
-      setEdgeProbabilities={setEdgeProbabilities}
-      selectedBarIndex={selectedBarIndex}
-      setSelectedBarIndex={setSelectedBarIndex}
-      totalBars={totalBars}
-      setTotalBars={setTotalBars}
-      kNeighbors={kNeighbors}
-      setKNeighbors={setKNeighbors}
-      onNavigateToMMLCDev={() => setCurrentPage('mmlc-dev')}
-    />
+    <div className="h-screen flex flex-col">
+      <TopNavigation activeTab={activeTab} onTabChange={setActiveTab} />
+      <div className="flex-1 min-h-0">
+        {renderContent()}
+      </div>
+    </div>
   )
 }
 

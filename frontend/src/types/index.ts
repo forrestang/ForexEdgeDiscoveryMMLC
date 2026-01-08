@@ -422,10 +422,67 @@ export interface DebugState {
   levels: DebugLevelData[];
   stitch_permanent_legs: DebugStitchLeg[];
   stitch_swings: DebugStitchSwing[];
+  stitch_swings_level: number[];  // Parallel array: level each swing originated from (0=OPEN, 1=L1, 2=L2, etc.)
   prev_L1_Direction: string;
   num_waves_returned: number;
   L1_count: number;  // Number of extremes in current L1 direction
   L1_leg: number;  // Overall L1 swing number (never resets)
+}
+
+// MMLC Autoencoder Output Types
+export interface MMLCSwingData {
+  bar: number;          // Bar index (-1 for preswing)
+  price: number;        // Price at swing point
+  direction: number;    // +1 (HIGH), -1 (LOW), 0 (OPEN anchor)
+  level: number;        // Wave level (0=OPEN, 1=L1, 2=L2, etc.)
+}
+
+export interface MMLCLegData {
+  start_bar: number;
+  start_price: number;
+  end_bar: number;
+  end_price: number;
+  level: number;
+  direction: number;  // +1 or -1
+  is_developing: boolean;
+}
+
+export interface MMLCBarData {
+  bar_index: number;
+  session_open_price: number;
+  total_session_bars: number;
+  current_close: number;
+  swings: MMLCSwingData[];  // Primary output - swing array
+  legs: MMLCLegData[];       // Deprecated - kept for backward compatibility
+}
+
+// LSTM Output Types
+export interface LSTMVectorData {
+  price_raw: number;
+  price_delta: number;
+  time_delta: number;
+}
+
+export interface LSTMStateData {
+  level: number;
+  direction: string;  // "UP" or "DOWN"
+  event: string;      // "EXTENSION", "SPAWN", or "REVERSAL"
+}
+
+export interface LSTMOutcomeData {
+  next_bar_delta: number;      // Close[T+1] - Close[T]
+  session_close_delta: number; // Close[SessionEnd] - Close[T]
+  session_max_up: number;      // MFE: Max(High[T...End]) - Close[T]
+  session_max_down: number;    // MAE: Min(Low[T...End]) - Close[T] (negative)
+}
+
+export interface LSTMBarPayload {
+  sequence_id: number;
+  timestamp: string;
+  total_session_bars: number;
+  vector: LSTMVectorData;
+  state: LSTMStateData;
+  outcome?: LSTMOutcomeData;   // Forward-looking outcome (for training)
 }
 
 export interface DevRunResponse {
@@ -436,4 +493,6 @@ export interface DevRunResponse {
   annotations: StitchAnnotation[];
   swing_labels: SwingLabel[];
   debug_state?: DebugState;
+  mmlc_out: MMLCBarData[];  // Autoencoder training data
+  lstm_out: LSTMBarPayload[];  // LSTM training data
 }

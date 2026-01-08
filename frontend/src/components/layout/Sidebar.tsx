@@ -7,7 +7,7 @@ import { EdgeFinderTab } from '@/components/sidebar/EdgeFinderTab'
 import { EdgeStatsPanel } from '@/components/chart/EdgeStatsPanel'
 import { MMLCDebugPanel } from '@/components/sidebar/MMLCDebugPanel'
 import { useSnapshotData } from '@/hooks/useChartData'
-import { Settings, Database, Search, Brain, Wrench } from 'lucide-react'
+import { Settings, Database, Search, Brain } from 'lucide-react'
 import type { ChartSettings } from '@/App'
 import type { EdgeProbabilities } from '@/types'
 
@@ -26,7 +26,6 @@ interface SidebarProps {
   isInferenceLoading: boolean
   inferenceError: string | null
   onViewMatches: () => void
-  onNavigateToMMLCDev?: () => void
 }
 
 export function Sidebar({
@@ -43,7 +42,6 @@ export function Sidebar({
   isInferenceLoading,
   inferenceError,
   onViewMatches,
-  onNavigateToMMLCDev,
 }: SidebarProps) {
   const [activeTab, setActiveTab] = useState('explore')
 
@@ -64,20 +62,9 @@ export function Sidebar({
   return (
     <div className="h-full flex flex-col bg-card border-r border-border">
       <div className="p-4 border-b border-border">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-semibold">Waveform Analyzer</h1>
-            <p className="text-xs text-muted-foreground">Recursive Session Analysis</p>
-          </div>
-          {onNavigateToMMLCDev && (
-            <button
-              onClick={onNavigateToMMLCDev}
-              className="p-2 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-              title="MMLC Development Sandbox"
-            >
-              <Wrench className="h-4 w-4" />
-            </button>
-          )}
+        <div>
+          <h1 className="sidebar-header-title">AE+KNN</h1>
+          <p className="sidebar-header-subtitle">Similarity Model</p>
         </div>
       </div>
 

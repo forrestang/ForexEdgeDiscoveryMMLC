@@ -4,19 +4,15 @@ import Plot from 'react-plotly.js'
 import { api } from '@/lib/api'
 import { DEFAULT_WORKING_DIRECTORY } from '@/lib/constants'
 import { useMMLCDevSettings } from '@/hooks/usePersistedSettings'
-import { Loader2, Play, RotateCcw, ArrowLeft, Bug } from 'lucide-react'
+import { Loader2, Play, RotateCcw, Bug, BarChart3 } from 'lucide-react'
 import type { SessionType, TimeframeType, CandleData, WaveData, StitchAnnotation, SwingLabel, DebugState } from '@/types'
 import type Plotly from 'plotly.js'
 import type { Data, Layout, Shape, Annotations } from 'plotly.js'
 
-interface MMLCDevPageProps {
-  onBack: () => void
-}
-
 const SESSION_OPTIONS: SessionType[] = ['london', 'ny', 'asia', 'full_day']
 const TIMEFRAME_OPTIONS: TimeframeType[] = ['M1', 'M5', 'M10', 'M15', 'M30', 'H1', 'H4']
 
-export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
+export function MMLCDevPage() {
   const [workingDirectory] = useState(DEFAULT_WORKING_DIRECTORY)
   const { settings: savedSettings, updateSettings: saveSettings } = useMMLCDevSettings()
 
@@ -44,6 +40,7 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
   // Debug panel
   const [debugState, setDebugState] = useState<DebugState | null>(null)
   const [debugWindowRef, setDebugWindowRef] = useState<Window | null>(null)
+  const [statsWindowRef, setStatsWindowRef] = useState<Window | null>(null)
 
   // Clicked bar data box
   const [clickedBarInfo, setClickedBarInfo] = useState<{
@@ -61,7 +58,9 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
     time: string;
     yPixel: number;
     xPixel: number;
+    barIndex: number;
   } | null>(null)
+  const [showStatusBox, setShowStatusBox] = useState(false)
   const chartContainerRef = useRef<HTMLDivElement>(null)
 
   // Persist settings when they change
@@ -93,6 +92,24 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
       setDebugWindowRef(popup)
     }
   }, [debugWindowRef])
+
+  // Open stats panel in popup window
+  const openStatsPopup = useCallback(() => {
+    // Check if popup already exists and is open
+    if (statsWindowRef && !statsWindowRef.closed) {
+      statsWindowRef.focus()
+      return
+    }
+    // Open new popup window
+    const popup = window.open(
+      '/?page=stats-panel',
+      'mmlc-stats-panel',
+      'width=600,height=800,left=650,top=100,resizable=yes,scrollbars=yes'
+    )
+    if (popup) {
+      setStatsWindowRef(popup)
+    }
+  }, [statsWindowRef])
 
   // Fetch available pairs
   const { data: pairsData } = useQuery({
@@ -144,14 +161,30 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
       setAnnotations(data.annotations || [])
       setSwingLabels(data.swing_labels || [])
       setDebugState(data.debug_state || null)
+      // Sync mmlc_out to localStorage for debug panel
+      console.log('[MMLC] API response mmlc_out:', data.mmlc_out?.length, 'snapshots')
+      console.log('[MMLC] First snapshot swings:', data.mmlc_out?.[0]?.swings)
+      if (data.mmlc_out) {
+        localStorage.setItem('mmlc-out', JSON.stringify(data.mmlc_out))
+        console.log('[MMLC] Stored mmlc_out to localStorage')
+      }
+      // Sync lstm_out to localStorage for debug panel
+      if (data.lstm_out) {
+        localStorage.setItem('lstm-out', JSON.stringify(data.lstm_out))
+        console.log('[MMLC] Stored lstm_out to localStorage:', data.lstm_out?.length, 'payloads')
+      }
+      // Sync session metadata for stats panel
+      localStorage.setItem('mmlc-session-meta', JSON.stringify({
+        pair,
+        date,
+        session,
+        timeframe,
+        mode,
+        totalBars: candles.length,
+        availableDates: datesData?.dates || [],
+      }))
     },
   })
-
-  const handleLoad = useCallback(() => {
-    if (pair && date) {
-      loadSession.mutate()
-    }
-  }, [pair, date, loadSession])
 
   const handleRun = useCallback(() => {
     runEngine.mutate()
@@ -228,11 +261,25 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
 
       const price = yRange[0] + yRatio * (yRange[1] - yRange[0])
 
+      // Find the closest bar to the cursor
+      const hoverTime = new Date(time).getTime()
+      let closestBarIndex = -1
+      let closestDistance = Infinity
+      for (let i = 0; i < candles.length; i++) {
+        const barTime = new Date(candles[i].timestamp).getTime()
+        const distance = Math.abs(barTime - hoverTime)
+        if (distance < closestDistance) {
+          closestDistance = distance
+          closestBarIndex = i
+        }
+      }
+
       setHoverInfo({
         price,
         time,
         xPixel: x,
         yPixel: y,
+        barIndex: closestBarIndex,
       })
     }
 
@@ -248,6 +295,13 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
       container.removeEventListener('mouseleave', handleMouseLeave)
     }
   }, [candles.length])
+
+  // Auto-load session when date/session/timeframe changes
+  useEffect(() => {
+    if (pair && date && !loadSession.isPending) {
+      loadSession.mutate()
+    }
+  }, [date, session, timeframe])
 
   // Auto-run when bar range or mode changes (only if session is loaded)
   useEffect(() => {
@@ -374,17 +428,10 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
   const dates = datesData?.dates || []
 
   return (
-    <div className="h-screen flex flex-col bg-background text-foreground">
+    <div className="h-full flex flex-col bg-background text-foreground">
       {/* Header */}
-      <div className="flex items-center gap-4 px-4 py-2 border-b border-border">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-1 px-2 py-1 rounded text-sm hover:bg-muted"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back
-        </button>
-        <h1 className="text-lg font-semibold">MMLC Development Sandbox</h1>
+      <div className="sandbox-header">
+        <span className="sandbox-title">Development Environment</span>
       </div>
 
       <div className="flex-1 flex min-h-0">
@@ -412,18 +459,42 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
             </div>
 
             <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">Date</label>
-              <select
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-                className="w-full px-2 py-1 rounded bg-muted border border-border text-sm"
-                disabled={!pair}
-              >
-                <option value="">Select date...</option>
-                {dates.map((d) => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
-              </select>
+              <label className="text-xs text-muted-foreground">
+                Date {date && `(${dates.indexOf(date) + 1}/${dates.length})`}
+              </label>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => {
+                    const idx = dates.indexOf(date)
+                    if (idx > 0) setDate(dates[idx - 1])
+                  }}
+                  disabled={!pair || dates.indexOf(date) <= 0}
+                  className="px-2 py-1 rounded bg-muted hover:bg-muted/80 text-sm font-bold disabled:opacity-30"
+                >
+                  −
+                </button>
+                <button
+                  onClick={() => {
+                    const idx = dates.indexOf(date)
+                    if (idx >= 0 && idx < dates.length - 1) setDate(dates[idx + 1])
+                  }}
+                  disabled={!pair || dates.indexOf(date) >= dates.length - 1}
+                  className="px-2 py-1 rounded bg-muted hover:bg-muted/80 text-sm font-bold disabled:opacity-30"
+                >
+                  +
+                </button>
+                <select
+                  value={date}
+                  onChange={(e) => setDate(e.target.value)}
+                  className="flex-1 px-2 py-1 rounded bg-muted border border-border text-sm"
+                  disabled={!pair}
+                >
+                  <option value="">Select date...</option>
+                  {dates.map((d) => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             <div className="space-y-1">
@@ -452,14 +523,12 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
               </select>
             </div>
 
-            <button
-              onClick={handleLoad}
-              disabled={!pair || !date || loadSession.isPending}
-              className="w-full px-3 py-1.5 rounded bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
-            >
-              {loadSession.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
-              Load Session
-            </button>
+            {loadSession.isPending && (
+              <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Loading...
+              </div>
+            )}
           </div>
 
           {/* Bar Range Controls */}
@@ -566,6 +635,18 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
                 Waveform: {showWaveform ? 'ON' : 'OFF'}
               </button>
 
+              {/* Status Box Toggle */}
+              <button
+                onClick={() => setShowStatusBox(!showStatusBox)}
+                className={`w-full px-2 py-1 rounded text-xs font-medium transition-colors ${
+                  showStatusBox
+                    ? 'bg-cyan-600 text-white'
+                    : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                }`}
+              >
+                Status: {showStatusBox ? 'ON' : 'OFF'}
+              </button>
+
               <div className="flex gap-2">
                 <button
                   onClick={handleRun}
@@ -588,15 +669,24 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
                 </button>
               </div>
 
-              {/* Debug Button - Opens popup window */}
-              <button
-                onClick={openDebugPopup}
-                disabled={!debugState}
-                className="w-full px-3 py-1.5 rounded bg-orange-600 text-white text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2 hover:bg-orange-700"
-              >
-                <Bug className="h-3 w-3" />
-                Debug Panel
-              </button>
+              {/* Debug & Stats Buttons - Opens popup windows */}
+              <div className="flex gap-2">
+                <button
+                  onClick={openDebugPopup}
+                  disabled={!debugState}
+                  className="flex-1 px-3 py-1.5 rounded bg-orange-600 text-white text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2 hover:bg-orange-700"
+                >
+                  <Bug className="h-3 w-3" />
+                  Debug
+                </button>
+                <button
+                  onClick={openStatsPopup}
+                  className="flex-1 px-3 py-1.5 rounded bg-blue-600 text-white text-sm font-medium flex items-center justify-center gap-2 hover:bg-blue-700"
+                >
+                  <BarChart3 className="h-3 w-3" />
+                  Stats
+                </button>
+              </div>
             </div>
           )}
 
@@ -733,6 +823,40 @@ export function MMLCDevPage({ onBack }: MMLCDevPageProps) {
                     <span className="text-red-400">{clickedBarInfo.low.toFixed(5)}</span>
                     <span className="text-gray-400">C:</span>
                     <span>{clickedBarInfo.close.toFixed(5)}</span>
+                  </div>
+                </div>
+              )}
+              {/* Status box - fixed position upper left, toggle controlled */}
+              {showStatusBox && debugState && (
+                <div className="absolute top-2 left-2 bg-black/95 text-white text-xs font-mono p-2 rounded border border-gray-600 z-30 min-w-[180px]">
+                  <div className="text-gray-400 mb-1 border-b border-gray-600 pb-1">
+                    Bar {debugState.end_bar}
+                  </div>
+                  {debugState.current_candle && (
+                    <div className="grid grid-cols-4 gap-x-2 gap-y-0.5 mb-2">
+                      <span className="text-gray-400">O</span>
+                      <span className="text-gray-400">H</span>
+                      <span className="text-gray-400">L</span>
+                      <span className="text-gray-400">C</span>
+                      <span>{debugState.current_candle.open.toFixed(5)}</span>
+                      <span className="text-green-400">{debugState.current_candle.high.toFixed(5)}</span>
+                      <span className="text-red-400">{debugState.current_candle.low.toFixed(5)}</span>
+                      <span>{debugState.current_candle.close.toFixed(5)}</span>
+                    </div>
+                  )}
+                  <div className="border-t border-gray-600 pt-1">
+                    <div className="grid grid-cols-3 gap-x-2 gap-y-0.5">
+                      <span className="text-gray-400"></span>
+                      <span className="text-gray-400 text-center">High</span>
+                      <span className="text-gray-400 text-center">Low</span>
+                      {debugState.levels.map((level) => (
+                        <div key={level.level} className="contents">
+                          <span className="text-cyan-400">L{level.level}</span>
+                          <span className="text-green-400 text-right">{level.high.toFixed(5)}</span>
+                          <span className="text-red-400 text-right">{level.low.toFixed(5)}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
               )}

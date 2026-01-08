@@ -1,9 +1,29 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  /* Color System - Financial Terminal Theme */
+  --color-bg-deep: hsl(225, 25%, 5%);
+  --color-bg-primary: hsl(225, 22%, 8%);
+  --color-bg-elevated: hsl(225, 20%, 12%);
+  --color-bg-surface: hsl(225, 18%, 15%);
+
+  --color-border-subtle: hsl(225, 15%, 18%);
+  --color-border-default: hsl(225, 15%, 22%);
+  --color-border-emphasis: hsl(225, 15%, 28%);
+
+  --color-text-primary: hsl(210, 40%, 98%);
+  --color-text-secondary: hsl(215, 20%, 65%);
+  --color-text-muted: hsl(215, 15%, 45%);
+
+  --color-accent-primary: hsl(166, 72%, 50%);
+  --color-accent-secondary: hsl(199, 89%, 48%);
+  --color-accent-tertiary: hsl(280, 65%, 60%);
+
+  font-family: 'Outfit', system-ui, sans-serif;
   line-height: 1.5;
   font-weight: 400;
   color-scheme: dark;
@@ -17,8 +37,8 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background-color: hsl(222.2 84% 4.9%);
-  color: hsl(210 40% 98%);
+  background-color: var(--color-bg-deep);
+  color: var(--color-text-primary);
 }
 
 #root {
@@ -34,14 +54,329 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: hsl(217.2 32.6% 17.5%);
+  background: var(--color-bg-elevated);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: hsl(215 20.2% 45.1%);
+  background: var(--color-border-emphasis);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(215 20.2% 55.1%);
+}
+
+/* ========================================
+   TOP NAVIGATION
+   ======================================== */
+
+.top-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 64px;
+  padding: 0 24px;
+  background: linear-gradient(180deg, var(--color-bg-elevated) 0%, var(--color-bg-primary) 100%);
+  border-bottom: 1px solid var(--color-border-subtle);
+  position: relative;
+  z-index: 100;
+}
+
+.top-nav::before {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent,
+    var(--color-accent-primary) 20%,
+    var(--color-accent-secondary) 50%,
+    var(--color-accent-primary) 80%,
+    transparent
+  );
+  opacity: 0.3;
+}
+
+.top-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.top-nav-brand-mark {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--color-bg-deep);
+  background: linear-gradient(135deg, var(--color-accent-primary), var(--color-accent-secondary));
+  padding: 6px 10px;
+  border-radius: 4px;
+}
+
+.top-nav-brand-text {
+  font-weight: 500;
+  font-size: 15px;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.02em;
+}
+
+.top-nav-tabs {
+  display: flex;
+  gap: 4px;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.top-nav-tab {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 28px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border-radius: 8px 8px 0 0;
+}
+
+.top-nav-tab:hover:not(.active) {
+  background: var(--color-bg-surface);
+}
+
+.top-nav-tab.active {
+  background: var(--color-bg-primary);
+}
+
+.top-nav-tab-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  letter-spacing: 0.05em;
+  transition: color 0.2s ease;
+}
+
+.top-nav-tab.active .top-nav-tab-title {
+  color: var(--color-accent-primary);
+}
+
+.top-nav-tab:hover .top-nav-tab-title {
+  color: var(--color-text-primary);
+}
+
+.top-nav-tab-subtitle {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  transition: color 0.2s ease;
+}
+
+.top-nav-tab.active .top-nav-tab-subtitle {
+  color: var(--color-text-secondary);
+}
+
+.top-nav-tab-indicator {
+  position: absolute;
+  bottom: 0;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--color-accent-primary), var(--color-accent-secondary));
+  border-radius: 2px 2px 0 0;
+}
+
+.top-nav-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.top-nav-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-accent-primary);
+  box-shadow: 0 0 8px var(--color-accent-primary);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ========================================
+   STPM PAGE
+   ======================================== */
+
+.stpm-page {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  background: var(--color-bg-primary);
+}
+
+.stpm-grid-bg {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--color-border-subtle) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-border-subtle) 1px, transparent 1px);
+  background-size: 60px 60px;
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.stpm-hero {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  max-width: 600px;
+  padding: 48px;
+}
+
+.stpm-hero-badge {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--color-accent-tertiary);
+  background: hsla(280, 65%, 60%, 0.1);
+  border: 1px solid hsla(280, 65%, 60%, 0.3);
+  padding: 6px 16px;
+  border-radius: 100px;
+  margin-bottom: 24px;
+}
+
+.stpm-hero-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 56px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  margin: 0 0 8px;
+  background: linear-gradient(135deg, var(--color-text-primary) 0%, var(--color-accent-tertiary) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.stpm-hero-subtitle {
+  font-size: 18px;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+  margin: 0 0 32px;
+  letter-spacing: 0.02em;
+}
+
+.stpm-description {
+  color: var(--color-text-muted);
+  font-size: 15px;
+  line-height: 1.7;
+  margin-bottom: 48px;
+}
+
+.stpm-features {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  text-align: left;
+}
+
+.stpm-feature {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  transition: all 0.3s ease;
+}
+
+.stpm-feature:hover {
+  border-color: var(--color-accent-tertiary);
+  transform: translateX(4px);
+}
+
+.stpm-feature-icon {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: hsla(280, 65%, 60%, 0.1);
+  border-radius: 10px;
+  color: var(--color-accent-tertiary);
+}
+
+.stpm-feature-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.stpm-feature-content h3 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0 0 4px;
+}
+
+.stpm-feature-content p {
+  font-size: 13px;
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
+/* ========================================
+   SANDBOX HEADER (replaces old dev header)
+   ======================================== */
+
+.sandbox-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 20px;
+  background: var(--color-bg-elevated);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.sandbox-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.05em;
+}
+
+/* ========================================
+   SIDEBAR HEADER UPDATE
+   ======================================== */
+
+.sidebar-header-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--color-accent-primary);
+}
+
+.sidebar-header-subtitle {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-top: 2px;
 }

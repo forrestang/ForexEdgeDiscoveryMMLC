@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
-import type { DebugState } from '@/types'
+import type { DebugState, MMLCBarData, LSTMBarPayload } from '@/types'
 
 export function DebugPanelPage() {
   const [debugState, setDebugState] = useState<DebugState | null>(null)
+  const [mmlcOut, setMmlcOut] = useState<MMLCBarData[]>([])
+  const [lstmOut, setLstmOut] = useState<LSTMBarPayload[]>([])
 
   useEffect(() => {
     // Load initial state from localStorage
@@ -15,6 +17,32 @@ export function DebugPanelPage() {
       }
     }
 
+    // Load mmlc_out from localStorage
+    const storedMmlcOut = localStorage.getItem('mmlc-out')
+    console.log('[DebugPanel] Loading mmlc_out from localStorage:', storedMmlcOut ? 'found' : 'not found')
+    if (storedMmlcOut) {
+      try {
+        const parsed = JSON.parse(storedMmlcOut)
+        console.log('[DebugPanel] Parsed mmlc_out:', parsed.length, 'snapshots')
+        console.log('[DebugPanel] First snapshot swings:', parsed[0]?.swings)
+        setMmlcOut(parsed)
+      } catch (e) {
+        console.error('Failed to parse mmlc_out:', e)
+      }
+    }
+
+    // Load lstm_out from localStorage
+    const storedLstmOut = localStorage.getItem('lstm-out')
+    if (storedLstmOut) {
+      try {
+        const parsed = JSON.parse(storedLstmOut)
+        console.log('[DebugPanel] Parsed lstm_out:', parsed.length, 'payloads')
+        setLstmOut(parsed)
+      } catch (e) {
+        console.error('Failed to parse lstm_out:', e)
+      }
+    }
+
     // Listen for changes from main window
     const handleStorage = (e: StorageEvent) => {
       if (e.key === 'mmlc-debug-state' && e.newValue) {
@@ -22,6 +50,20 @@ export function DebugPanelPage() {
           setDebugState(JSON.parse(e.newValue))
         } catch (err) {
           console.error('Failed to parse debug state:', err)
+        }
+      }
+      if (e.key === 'mmlc-out' && e.newValue) {
+        try {
+          setMmlcOut(JSON.parse(e.newValue))
+        } catch (err) {
+          console.error('Failed to parse mmlc_out:', err)
+        }
+      }
+      if (e.key === 'lstm-out' && e.newValue) {
+        try {
+          setLstmOut(JSON.parse(e.newValue))
+        } catch (err) {
+          console.error('Failed to parse lstm_out:', err)
         }
       }
     }
@@ -36,6 +78,34 @@ export function DebugPanelPage() {
           const parsed = JSON.parse(stored)
           setDebugState(prev => {
             if (JSON.stringify(prev) !== stored) {
+              return parsed
+            }
+            return prev
+          })
+        } catch (e) {
+          // ignore
+        }
+      }
+      const storedMmlcOut = localStorage.getItem('mmlc-out')
+      if (storedMmlcOut) {
+        try {
+          const parsed = JSON.parse(storedMmlcOut)
+          setMmlcOut(prev => {
+            if (JSON.stringify(prev) !== storedMmlcOut) {
+              return parsed
+            }
+            return prev
+          })
+        } catch (e) {
+          // ignore
+        }
+      }
+      const storedLstmOut = localStorage.getItem('lstm-out')
+      if (storedLstmOut) {
+        try {
+          const parsed = JSON.parse(storedLstmOut)
+          setLstmOut(prev => {
+            if (JSON.stringify(prev) !== storedLstmOut) {
               return parsed
             }
             return prev
@@ -123,6 +193,206 @@ export function DebugPanelPage() {
         </div>
       </div>
 
+      {/* MMLC Output - Bar-by-Bar Payloads */}
+      {(() => {
+        // Find the payload for the current end_bar
+        const currentPayload = lstmOut.find(p => p.sequence_id === debugState.end_bar + 1)
+        const eventColors: Record<string, string> = {
+          EXTENSION: 'bg-green-900 border-green-500 text-green-400',
+          SPAWN: 'bg-orange-900 border-orange-500 text-orange-400',
+          REVERSAL: 'bg-red-900 border-red-500 text-red-400',
+        }
+        return (
+          <div className="mb-4 p-3 bg-muted rounded border-2 border-blue-600">
+            <h2 className="text-lg font-bold text-blue-400 mb-3">
+              MMLC Output - Bar {debugState.end_bar}
+            </h2>
+
+            {currentPayload ? (
+              <>
+                {/* Current Bar Payload */}
+                <div className="mb-3 p-3 bg-background rounded">
+                  <div className="grid grid-cols-3 gap-4">
+                    {/* Left: Vector */}
+                    <div>
+                      <div className="text-sm font-semibold text-purple-400 mb-2">vector</div>
+                      <div className="space-y-1 text-xs">
+                        <div>
+                          <span className="text-cyan-400">price_raw</span>
+                          <span className="text-muted-foreground"> = </span>
+                          <span className="text-white">{currentPayload.vector.price_raw.toFixed(5)}</span>
+                        </div>
+                        <div>
+                          <span className="text-cyan-400">price_delta</span>
+                          <span className="text-muted-foreground"> = </span>
+                          <span className={currentPayload.vector.price_delta >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {currentPayload.vector.price_delta >= 0 ? '+' : ''}{currentPayload.vector.price_delta.toFixed(5)}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-cyan-400">time_delta</span>
+                          <span className="text-muted-foreground"> = </span>
+                          <span className="text-white">{currentPayload.vector.time_delta}</span>
+                        </div>
+                        <div>
+                          <span className="text-cyan-400">timestamp</span>
+                          <span className="text-muted-foreground"> = </span>
+                          <span className="text-white">{currentPayload.timestamp}</span>
+                        </div>
+                        <div>
+                          <span className="text-cyan-400">total_bars</span>
+                          <span className="text-muted-foreground"> = </span>
+                          <span className="text-white">{currentPayload.total_session_bars}</span>
+                        </div>
+                      </div>
+                    </div>
+                    {/* Middle: State */}
+                    <div>
+                      <div className="text-sm font-semibold text-purple-400 mb-2">state</div>
+                      <div className="space-y-1 text-xs">
+                        <div>
+                          <span className="text-cyan-400">level</span>
+                          <span className="text-muted-foreground"> = </span>
+                          <span className="text-yellow-400 font-bold">L{currentPayload.state.level}</span>
+                        </div>
+                        <div>
+                          <span className="text-cyan-400">direction</span>
+                          <span className="text-muted-foreground"> = </span>
+                          <span className={currentPayload.state.direction === 'UP' ? 'text-green-400' : 'text-red-400'}>
+                            {currentPayload.state.direction}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-cyan-400">event</span>
+                          <span className="text-muted-foreground"> = </span>
+                          <span className={`px-2 py-0.5 rounded border ${eventColors[currentPayload.state.event] || 'text-white'}`}>
+                            {currentPayload.state.event}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    {/* Right: Outcome */}
+                    <div>
+                      <div className="text-sm font-semibold text-amber-400 mb-2">outcome</div>
+                      {currentPayload.outcome ? (
+                        <div className="space-y-1 text-xs">
+                          <div>
+                            <span className="text-cyan-400">next_bar_delta</span>
+                            <span className="text-muted-foreground"> = </span>
+                            <span className={currentPayload.outcome.next_bar_delta >= 0 ? 'text-green-400' : 'text-red-400'}>
+                              {currentPayload.outcome.next_bar_delta >= 0 ? '+' : ''}{currentPayload.outcome.next_bar_delta.toFixed(5)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-cyan-400">session_close_delta</span>
+                            <span className="text-muted-foreground"> = </span>
+                            <span className={currentPayload.outcome.session_close_delta >= 0 ? 'text-green-400' : 'text-red-400'}>
+                              {currentPayload.outcome.session_close_delta >= 0 ? '+' : ''}{currentPayload.outcome.session_close_delta.toFixed(5)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-cyan-400">session_max_up</span>
+                            <span className="text-muted-foreground text-[10px]"> (MFE)</span>
+                            <span className="text-muted-foreground"> = </span>
+                            <span className="text-green-400">+{currentPayload.outcome.session_max_up.toFixed(5)}</span>
+                          </div>
+                          <div>
+                            <span className="text-cyan-400">session_max_down</span>
+                            <span className="text-muted-foreground text-[10px]"> (MAE)</span>
+                            <span className="text-muted-foreground"> = </span>
+                            <span className="text-red-400">{currentPayload.outcome.session_max_down.toFixed(5)}</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-muted-foreground text-xs">Not available</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Recent Payloads Table */}
+                <div className="p-2 bg-background rounded">
+                  <div className="text-sm font-semibold text-green-400 mb-2">
+                    Recent Bar Payloads ({Math.min(lstmOut.length, 10)} of {lstmOut.length})
+                  </div>
+                  <div className="max-h-48 overflow-y-auto">
+                    <table className="w-full text-xs">
+                      <thead className="sticky top-0 bg-background">
+                        <tr className="text-muted-foreground border-b border-gray-700">
+                          <th className="text-left py-1 px-1">seq</th>
+                          <th className="text-left py-1 px-1">price</th>
+                          <th className="text-right py-1 px-1">delta</th>
+                          <th className="text-center py-1 px-1">lvl</th>
+                          <th className="text-center py-1 px-1">dir</th>
+                          <th className="text-center py-1 px-1">event</th>
+                          <th className="text-right py-1 px-1 text-amber-400">next</th>
+                          <th className="text-right py-1 px-1 text-green-400">MFE</th>
+                          <th className="text-right py-1 px-1 text-red-400">MAE</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {lstmOut.slice(-10).reverse().map((payload) => (
+                          <tr
+                            key={payload.sequence_id}
+                            className={`border-b border-gray-800 ${payload.sequence_id === currentPayload.sequence_id ? 'bg-blue-900/30' : ''}`}
+                          >
+                            <td className="py-1 px-1 text-yellow-300">{payload.sequence_id}</td>
+                            <td className="py-1 px-1 text-white">{payload.vector.price_raw.toFixed(5)}</td>
+                            <td className={`py-1 px-1 text-right ${payload.vector.price_delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {payload.vector.price_delta >= 0 ? '+' : ''}{payload.vector.price_delta.toFixed(5)}
+                            </td>
+                            <td className="py-1 px-1 text-center text-yellow-400">L{payload.state.level}</td>
+                            <td className={`py-1 px-1 text-center ${payload.state.direction === 'UP' ? 'text-green-400' : 'text-red-400'}`}>
+                              {payload.state.direction === 'UP' ? '↑' : '↓'}
+                            </td>
+                            <td className="py-1 px-1 text-center">
+                              <span className={`px-1 py-0.5 rounded text-[10px] ${
+                                payload.state.event === 'EXTENSION' ? 'bg-green-900/50 text-green-400' :
+                                payload.state.event === 'SPAWN' ? 'bg-orange-900/50 text-orange-400' :
+                                'bg-red-900/50 text-red-400'
+                              }`}>
+                                {payload.state.event.slice(0, 3)}
+                              </span>
+                            </td>
+                            <td className={`py-1 px-1 text-right ${payload.outcome?.next_bar_delta !== undefined ? (payload.outcome.next_bar_delta >= 0 ? 'text-green-400' : 'text-red-400') : 'text-muted-foreground'}`}>
+                              {payload.outcome?.next_bar_delta !== undefined
+                                ? `${payload.outcome.next_bar_delta >= 0 ? '+' : ''}${payload.outcome.next_bar_delta.toFixed(5)}`
+                                : '-'}
+                            </td>
+                            <td className="py-1 px-1 text-right text-green-400">
+                              {payload.outcome?.session_max_up !== undefined
+                                ? `+${payload.outcome.session_max_up.toFixed(5)}`
+                                : '-'}
+                            </td>
+                            <td className="py-1 px-1 text-right text-red-400">
+                              {payload.outcome?.session_max_down !== undefined
+                                ? payload.outcome.session_max_down.toFixed(5)
+                                : '-'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="text-muted-foreground text-sm">
+                <p>No MMLC data available. Run the engine to generate payloads.</p>
+              </div>
+            )}
+
+            {/* Summary Stats */}
+            <div className="mt-3 pt-2 border-t border-gray-700 text-xs text-muted-foreground">
+              Total payloads: {lstmOut.length}
+              {lstmOut.length > 0 && (
+                <span> (seq {lstmOut[0].sequence_id} to {lstmOut[lstmOut.length - 1].sequence_id})</span>
+              )}
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Stitch Swings - Final Waveform Points (ALWAYS SHOW) */}
       <div className="mb-4 p-3 bg-muted rounded border-2 border-green-600">
         <div className="mb-2">
@@ -144,15 +414,21 @@ export function DebugPanelPage() {
             </div>
             <div className="mb-2">
               <span className="text-muted-foreground">directions: </span>
-              <span className="text-yellow-300">[{debugState.stitch_swings.map(s => s.direction > 0 ? '+1' : '-1').join(', ')}]</span>
+              <span className="text-yellow-300">[{debugState.stitch_swings.map(s => s.direction > 0 ? '+1' : (s.direction < 0 ? '-1' : '0')).join(', ')}]</span>
+            </div>
+            <div className="mb-2">
+              <span className="text-muted-foreground">levels: </span>
+              <span className="text-purple-400">[{debugState.stitch_swings_level?.join(', ') || ''}]</span>
+              <span className="text-muted-foreground text-xs ml-2">(0=OPEN, 1=L1, 2=L2, 3=L3...)</span>
             </div>
             <div className="grid grid-cols-4 gap-2 text-xs mt-2">
               {debugState.stitch_swings.map((swing, i) => (
                 <div key={i} className="bg-background p-1 rounded">
                   [{i}] bar {swing.bar} @ {swing.price.toFixed(5)}
-                  <span className={swing.direction > 0 ? 'text-green-400' : 'text-red-400'}>
-                    {' '}{swing.direction > 0 ? 'UP' : 'DOWN'}
+                  <span className={swing.direction > 0 ? 'text-green-400' : (swing.direction < 0 ? 'text-red-400' : 'text-gray-400')}>
+                    {' '}{swing.direction > 0 ? 'UP' : (swing.direction < 0 ? 'DOWN' : 'OPEN')}
                   </span>
+                  <span className="text-purple-400 ml-1">L{debugState.stitch_swings_level?.[i] ?? '?'}</span>
                 </div>
               ))}
             </div>
