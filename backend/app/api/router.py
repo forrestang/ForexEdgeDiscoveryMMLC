@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api import pipeline, data, chart, edge_finder, mmlc_dev
+from app.api import pipeline, data, chart, edge_finder, mmlc_dev, lstm, transformer
 
 api_router = APIRouter()
 
@@ -9,3 +9,5 @@ api_router.include_router(data.router, prefix="/instruments", tags=["instruments
 api_router.include_router(chart.router, prefix="/chart", tags=["chart"])
 api_router.include_router(edge_finder.router, prefix="/edge-finder", tags=["edge-finder"])
 api_router.include_router(mmlc_dev.router, prefix="/mmlc-dev", tags=["mmlc-dev"])
+api_router.include_router(lstm.router, prefix="/lstm", tags=["lstm"])
+api_router.include_router(transformer.router, prefix="/transformer", tags=["transformer"])

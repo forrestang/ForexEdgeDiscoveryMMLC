@@ -1,0 +1,44 @@
+# Transformer Training Configuration
+# ----------------------------------
+# Edit these values to experiment with different hyperparameters.
+# Load with: TransformerConfig.from_yaml("config.yaml")
+
+# Data Settings
+data:
+  target_session: "lon"           # Session to train on: asia, lon, ny, day
+  combine_sessions: null          # Combined sessions: "asia+lon", "lon+ny", or null
+  sequence_length: 64             # Fixed window size (left-padded)
+  batch_size: 32                  # Training batch size
+
+# Model Architecture
+model:
+  d_model: 128                    # Transformer hidden dimension
+  n_layers: 4                     # Number of encoder layers
+  n_heads: 4                      # Number of attention heads
+  d_ff: 512                       # Feed-forward dimension
+  dropout_rate: 0.1               # Dropout rate
+  latent_dim: 128                 # Latent vector dimension
+
+# Training Controls
+training:
+  learning_rate: 0.0001           # Initial learning rate
+  weight_decay: 0.00001           # AdamW weight decay
+  num_epochs: 100                 # Maximum training epochs
+  grad_clip: 1.0                  # Gradient clipping threshold
+  early_stopping_patience: 15     # Epochs without improvement before stopping
+  save_every: 10                  # Save checkpoint every N epochs
+
+# Embedding Dimensions (advanced)
+embeddings:
+  level_vocab_size: 6             # Vocab size for Level (0=pad, 1-5)
+  event_vocab_size: 4             # Vocab size for Event (0=pad, 1-3)
+  direction_vocab_size: 3         # Vocab size for Direction (0=pad, 1-2)
+  bar_position_vocab_size: 201    # Vocab size for BarPosition (0-200)
+  level_embed_dim: 16             # Level embedding dimension
+  event_embed_dim: 8              # Event embedding dimension
+  direction_embed_dim: 8          # Direction embedding dimension
+  bar_position_embed_dim: 32      # BarPosition embedding dimension
+  continuous_embed_dim: 8         # Continuous input projection dimension
+
+# Device Selection
+device: "auto"                    # "auto", "cuda", or "cpu"

@@ -24,9 +24,12 @@ SESSION_TIMES = {
     "asia": ((0, 0), (9, 0)),
     "london": ((8, 0), (17, 0)),
     "ny": ((13, 0), (22, 0)),
+    # Combo sessions
+    "asia_london": ((0, 0), (17, 0)),   # Asia start to London end
+    "london_ny": ((8, 0), (22, 0)),     # London start to NY end
 }
 
-SessionType = Literal["full_day", "asia", "london", "ny"]
+SessionType = Literal["full_day", "asia", "london", "ny", "asia_london", "london_ny"]
 
 TIMEFRAMES = ["M1", "M5", "M10", "M15", "M30", "H1", "H4"]
 TimeframeType = Literal["M1", "M5", "M10", "M15", "M30", "H1", "H4"]

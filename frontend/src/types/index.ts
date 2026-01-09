@@ -83,7 +83,7 @@ export interface ProcessStatus {
   message: string;
 }
 
-export type SessionType = 'full_day' | 'asia' | 'london' | 'ny';
+export type SessionType = 'full_day' | 'asia' | 'london' | 'ny' | 'asia_london' | 'london_ny';
 export type TimeframeType = 'M1' | 'M5' | 'M10' | 'M15' | 'M30' | 'H1' | 'H4';
 
 // Edge Finder Types

@@ -431,6 +431,469 @@ export const api = {
       }),
   },
 
+  lstm: {
+    getDataFiles: (workingDirectory?: string): Promise<{
+      files: Array<{ name: string; pair: string | null; year: number | null; type: string; size_mb: number }>
+    }> => {
+      const params = workingDirectory
+        ? `?working_directory=${encodeURIComponent(workingDirectory)}`
+        : '';
+      return fetchApi(`/lstm/data-files${params}`);
+    },
+
+    getParquets: (workingDirectory?: string): Promise<{
+      parquets: Array<{
+        name: string;
+        pair: string | null;
+        start_date: string | null;
+        end_date: string | null;
+        timeframe: string | null;
+        adr_period: number | null;
+        size_mb: number;
+        rows: number;
+      }>
+    }> => {
+      const params = workingDirectory
+        ? `?working_directory=${encodeURIComponent(workingDirectory)}`
+        : '';
+      return fetchApi(`/lstm/parquets${params}`);
+    },
+
+    createParquet: (params: {
+      pair: string;
+      start_date: string;
+      end_date: string;
+      working_directory?: string;
+    }): Promise<{
+      status: string;
+      message: string;
+      filename: string | null;
+      rows: number;
+      size_mb: number;
+    }> =>
+      fetchApi('/lstm/create-parquet', {
+        method: 'POST',
+        body: JSON.stringify({
+          pair: params.pair,
+          start_date: params.start_date,
+          end_date: params.end_date,
+          working_directory: params.working_directory,
+        }),
+      }),
+
+    deleteParquet: (filename: string, workingDirectory?: string): Promise<{
+      status: string;
+      message: string;
+    }> => {
+      const params = workingDirectory
+        ? `?working_directory=${encodeURIComponent(workingDirectory)}`
+        : '';
+      return fetchApi(`/lstm/parquet/${filename}${params}`, { method: 'DELETE' });
+    },
+
+    deleteParquetsBatch: (params: {
+      filenames: string[];
+      working_directory?: string;
+    }): Promise<{
+      status: string;
+      message: string;
+      deleted: string[];
+      errors: string[];
+    }> =>
+      fetchApi('/lstm/parquets/delete-batch', {
+        method: 'POST',
+        body: JSON.stringify({
+          filenames: params.filenames,
+          working_directory: params.working_directory,
+        }),
+      }),
+
+    createFromFiles: (params: {
+      files: string[];
+      working_directory?: string;
+      adr_period?: number;
+      timeframes?: string[];
+    }): Promise<{
+      status: string;
+      message: string;
+      created: Array<{
+        pair: string;
+        filename: string;
+        rows: number;
+        size_mb: number;
+        start_date: string;
+        end_date: string;
+        adr_period: number;
+        timeframe: string;
+        trimmed_days: number;
+      }>;
+      errors: string[];
+    }> =>
+      fetchApi('/lstm/create-from-files', {
+        method: 'POST',
+        body: JSON.stringify({
+          files: params.files,
+          working_directory: params.working_directory,
+          adr_period: params.adr_period ?? 20,
+          timeframes: params.timeframes ?? ['M5'],
+        }),
+      }),
+
+    // Bridge endpoints
+    getRawParquetsForBridge: (workingDirectory?: string): Promise<{
+      parquets: Array<{
+        name: string;
+        pair: string | null;
+        start_date: string | null;
+        end_date: string | null;
+        timeframe: string | null;
+        adr_period: number | null;
+        size_mb: number;
+        rows: number;
+      }>
+    }> => {
+      const params = workingDirectory
+        ? `?working_directory=${encodeURIComponent(workingDirectory)}`
+        : '';
+      return fetchApi(`/lstm/bridge/raw-parquets${params}`);
+    },
+
+    getBridgedParquets: (workingDirectory?: string): Promise<{
+      parquets: Array<{
+        name: string;
+        pair: string | null;
+        start_date: string | null;
+        end_date: string | null;
+        timeframe: string | null;
+        adr_period: number | null;
+        size_mb: number;
+        rows: number;
+      }>
+    }> => {
+      const params = workingDirectory
+        ? `?working_directory=${encodeURIComponent(workingDirectory)}`
+        : '';
+      return fetchApi(`/lstm/bridge/bridged-parquets${params}`);
+    },
+
+    bridgeFiles: (params: {
+      filenames: string[];
+      working_directory?: string;
+    }): Promise<{
+      status: string;
+      message: string;
+      results: Array<{
+        status: string;
+        message: string;
+        output_filename: string | null;
+        rows: number;
+        days_processed: number;
+        processing_time_seconds: number;
+      }>;
+      errors: string[];
+    }> =>
+      fetchApi('/lstm/bridge/batch', {
+        method: 'POST',
+        body: JSON.stringify({
+          filenames: params.filenames,
+          working_directory: params.working_directory,
+        }),
+      }),
+
+    deleteBridgedParquet: (filename: string, workingDirectory?: string): Promise<{
+      status: string;
+      message: string;
+    }> => {
+      const params = workingDirectory
+        ? `?working_directory=${encodeURIComponent(workingDirectory)}`
+        : '';
+      return fetchApi(`/lstm/bridge/bridged/${filename}${params}`, { method: 'DELETE' });
+    },
+  },
+
+  transformer: {
+    // Configuration defaults
+    getConfigDefaults: (params: {
+      session?: string;
+      timeframe?: string;
+      combine_sessions?: string;
+    }): Promise<{
+      sequence_length: number;
+      session_hours: number;
+      timeframe_minutes: number;
+      available_sessions: string[];
+      available_timeframes: string[];
+    }> => {
+      const searchParams = new URLSearchParams();
+      if (params.session) searchParams.set('session', params.session);
+      if (params.timeframe) searchParams.set('timeframe', params.timeframe);
+      if (params.combine_sessions) searchParams.set('combine_sessions', params.combine_sessions);
+      return fetchApi(`/transformer/config-defaults?${searchParams.toString()}`);
+    },
+
+    // Training status
+    getStatus: (): Promise<{
+      status: string;
+      current_epoch: number;
+      total_epochs: number;
+      train_loss: number | null;
+      val_loss: number | null;
+      best_loss: number | null;
+      epochs_without_improvement: number;
+      learning_rate: number | null;
+      model_name: string | null;
+      message: string | null;
+      // New fields
+      elapsed_seconds: number;
+      directional_accuracy: number | null;
+      r_squared: number | null;
+      max_error: number | null;
+      grad_norm: number | null;
+    }> => fetchApi('/transformer/status'),
+
+    // Start training
+    startTraining: (params: {
+      target_session?: string;
+      combine_sessions?: string;
+      sequence_length?: number;
+      batch_size?: number;
+      d_model?: number;
+      n_layers?: number;
+      n_heads?: number;
+      dropout_rate?: number;
+      learning_rate?: number;
+      num_epochs?: number;
+      early_stopping_patience?: number;
+      model_name?: string;
+      save_to_models_folder?: boolean;
+      working_directory?: string;
+    }): Promise<{
+      status: string;
+      message: string;
+      model_name: string | null;
+    }> =>
+      fetchApi('/transformer/start-training', {
+        method: 'POST',
+        body: JSON.stringify({
+          target_session: params.target_session ?? 'lon',
+          combine_sessions: params.combine_sessions,
+          sequence_length: params.sequence_length ?? 64,
+          batch_size: params.batch_size ?? 32,
+          d_model: params.d_model ?? 128,
+          n_layers: params.n_layers ?? 4,
+          n_heads: params.n_heads ?? 4,
+          dropout_rate: params.dropout_rate ?? 0.1,
+          learning_rate: params.learning_rate ?? 0.0001,
+          num_epochs: params.num_epochs ?? 100,
+          early_stopping_patience: params.early_stopping_patience ?? 15,
+          model_name: params.model_name,
+          save_to_models_folder: params.save_to_models_folder ?? false,
+          working_directory: params.working_directory,
+        }),
+      }),
+
+    // Stop training
+    stopTraining: (): Promise<{
+      status: string;
+      message: string;
+    }> => fetchApi('/transformer/stop-training', { method: 'POST' }),
+
+    // List models
+    getModels: (workingDirectory?: string): Promise<{
+      models: Array<{
+        name: string;
+        best_loss: number | null;
+        epochs_trained: number;
+        target_session: string | null;
+        sequence_length: number | null;
+        d_model: number | null;
+        n_layers: number | null;
+        created_at: string | null;
+      }>;
+    }> => {
+      const params = workingDirectory
+        ? `?working_directory=${encodeURIComponent(workingDirectory)}`
+        : '';
+      return fetchApi(`/transformer/models${params}`);
+    },
+
+    // Delete model
+    deleteModel: (modelName: string, workingDirectory?: string): Promise<{
+      status: string;
+      message: string;
+    }> =>
+      fetchApi('/transformer/delete-model', {
+        method: 'POST',
+        body: JSON.stringify({
+          model_name: modelName,
+          working_directory: workingDirectory,
+        }),
+      }),
+
+    // Parquet viewer endpoints
+    getParquetFiles: (workingDirectory?: string): Promise<{
+      files: Array<{
+        name: string;
+        path: string;
+        rows: number;
+        size_mb: number;
+        has_mmlc_columns: boolean;
+      }>;
+    }> => {
+      const params = workingDirectory
+        ? `?working_directory=${encodeURIComponent(workingDirectory)}`
+        : '';
+      return fetchApi(`/transformer/parquet-files${params}`);
+    },
+
+    getParquetDates: (params: {
+      filename: string;
+      working_directory?: string;
+    }): Promise<{
+      filename: string;
+      dates: string[];
+      total_dates: number;
+    }> => {
+      const searchParams = new URLSearchParams();
+      searchParams.set('filename', params.filename);
+      if (params.working_directory) searchParams.set('working_directory', params.working_directory);
+      return fetchApi(`/transformer/parquet-dates?${searchParams.toString()}`);
+    },
+
+    getParquetData: (params: {
+      filename: string;
+      working_directory?: string;
+      session?: string;
+      start_idx?: number;
+      limit?: number;
+      date?: string;
+    }): Promise<{
+      candles: Array<{
+        timestamp: string;
+        open: number;
+        high: number;
+        low: number;
+        close: number;
+      }>;
+      states: Array<{
+        level: number | null;
+        event: string | null;
+        dir: string | null;
+        out_max_up: number | null;
+        out_max_down: number | null;
+      }>;
+      total_rows: number;
+      start_idx: number;
+      session: string;
+      date: string | null;
+    }> => {
+      const searchParams = new URLSearchParams();
+      searchParams.set('filename', params.filename);
+      if (params.working_directory) searchParams.set('working_directory', params.working_directory);
+      if (params.session) searchParams.set('session', params.session);
+      if (params.start_idx !== undefined) searchParams.set('start_idx', String(params.start_idx));
+      if (params.limit !== undefined) searchParams.set('limit', String(params.limit));
+      if (params.date) searchParams.set('date', params.date);
+      return fetchApi(`/transformer/parquet-data?${searchParams.toString()}`);
+    },
+
+    // Queue endpoints
+    getQueueStatus: (): Promise<{
+      queue_running: boolean;
+      current_card_id: string | null;
+      cards: Array<{
+        card_id: string;
+        status: 'pending' | 'training' | 'completed' | 'error';
+        model_name: string;
+        current_epoch: number;
+        total_epochs: number;
+        train_loss: number | null;
+        val_loss: number | null;
+        best_loss: number | null;
+        elapsed_seconds: number;
+        directional_accuracy: number | null;
+        r_squared: number | null;
+        max_error: number | null;
+        grad_norm: number | null;
+        error_message: string | null;
+        final_directional_accuracy: number | null;
+        final_r_squared: number | null;
+        final_max_error: number | null;
+      }>;
+    }> => fetchApi('/transformer/queue/status'),
+
+    addToQueue: (params: {
+      card_id: string;
+      model_name: string;
+      session_option: string;
+      sequence_length?: number;
+      batch_size?: number;
+      d_model?: number;
+      n_layers?: number;
+      n_heads?: number;
+      dropout_rate?: number;
+      learning_rate?: number;
+      num_epochs?: number;
+      early_stopping_patience?: number;
+      save_to_models_folder?: boolean;
+      working_directory?: string;
+    }): Promise<{
+      status: string;
+      card_id: string;
+      message: string | null;
+    }> =>
+      fetchApi('/transformer/queue/add', {
+        method: 'POST',
+        body: JSON.stringify({
+          config: {
+            card_id: params.card_id,
+            model_name: params.model_name,
+            session_option: params.session_option,
+            sequence_length: params.sequence_length ?? 64,
+            batch_size: params.batch_size ?? 32,
+            d_model: params.d_model ?? 128,
+            n_layers: params.n_layers ?? 4,
+            n_heads: params.n_heads ?? 4,
+            dropout_rate: params.dropout_rate ?? 0.1,
+            learning_rate: params.learning_rate ?? 0.0001,
+            num_epochs: params.num_epochs ?? 100,
+            early_stopping_patience: params.early_stopping_patience ?? 15,
+            save_to_models_folder: params.save_to_models_folder ?? true,
+          },
+          working_directory: params.working_directory,
+        }),
+      }),
+
+    removeFromQueue: (cardId: string): Promise<{
+      status: string;
+      card_id: string | null;
+      message: string | null;
+    }> =>
+      fetchApi('/transformer/queue/remove', {
+        method: 'POST',
+        body: JSON.stringify({ card_id: cardId }),
+      }),
+
+    startQueue: (workingDirectory?: string): Promise<{
+      status: string;
+      message: string | null;
+    }> =>
+      fetchApi('/transformer/queue/start', {
+        method: 'POST',
+        body: JSON.stringify({ working_directory: workingDirectory }),
+      }),
+
+    stopQueue: (): Promise<{
+      status: string;
+      message: string | null;
+    }> => fetchApi('/transformer/queue/stop', { method: 'POST' }),
+
+    clearQueue: (): Promise<{
+      status: string;
+      message: string;
+    }> => fetchApi('/transformer/queue/clear', { method: 'POST' }),
+  },
+
   mmlcDev: {
     loadSession: (params: {
       pair: string;
