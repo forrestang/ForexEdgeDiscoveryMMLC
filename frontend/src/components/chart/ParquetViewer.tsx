@@ -55,6 +55,9 @@ interface MmlcState {
   level: number | null
   event: string | null
   dir: string | null
+  out_next: number | null
+  out_next5: number | null
+  out_sess: number | null
   out_max_up: number | null
   out_max_down: number | null
 }
@@ -103,6 +106,7 @@ export function ParquetViewer({ workingDirectory }: ParquetViewerProps) {
   const [selectedDate, setSelectedDate] = usePersistedState<string | null>('lstmParquetViewerDate', null)
   const [session, setSession] = usePersistedState('lstmParquetViewerSession', 'lon')
   const [currentBar, setCurrentBar] = usePersistedState('lstmParquetViewerBar', 0)
+  const [overlayPosition, setOverlayPosition] = usePersistedState<'top-right' | 'top-left' | 'bottom-right' | 'bottom-left'>('lstmParquetOverlayPos', 'top-right')
 
   // Ref for chart container (for mouse position tracking)
   const chartContainerRef = useRef<HTMLDivElement>(null)
@@ -111,6 +115,7 @@ export function ParquetViewer({ workingDirectory }: ParquetViewerProps) {
   const [hoverInfo, setHoverInfo] = useState<{
     price: number
     time: string
+    barTime: string  // Snapped to actual bar timestamp
     xPixel: number
     yPixel: number
   } | null>(null)
@@ -207,13 +212,17 @@ export function ParquetViewer({ workingDirectory }: ParquetViewerProps) {
     }
   }
 
-  // Build date options for dropdown
+  // Build date options for dropdown (no "All dates" option)
   const dateOptions = useMemo(() => {
-    return [
-      { value: '', label: 'All dates' },
-      ...datesList.map((d) => ({ value: d, label: d })),
-    ]
+    return datesList.map((d) => ({ value: d, label: d }))
   }, [datesList])
+
+  // Auto-select first date when dates load and no date is selected
+  useEffect(() => {
+    if (datesList.length > 0 && (!selectedDate || !datesList.includes(selectedDate))) {
+      setSelectedDate(datesList[0])
+    }
+  }, [datesList, selectedDate, setSelectedDate])
 
   // Candlestick chart traces (using filtered & windowed candles)
   // Use raw timestamps directly like sandbox does
@@ -278,13 +287,26 @@ export function ParquetViewer({ workingDirectory }: ParquetViewerProps) {
 
       const xMin = new Date(xRange[0]).getTime()
       const xMax = new Date(xRange[1]).getTime()
-      const time = new Date(xMin + xRatio * (xMax - xMin)).toISOString()
+      const hoverTime = xMin + xRatio * (xMax - xMin)
 
       const price = yRange[0] + yRatio * (yRange[1] - yRange[0])
 
+      // Find the nearest bar to snap to
+      let nearestBar = visibleCandles[0]
+      let minDiff = Infinity
+      for (const candle of visibleCandles) {
+        const candleTime = new Date(candle.timestamp).getTime()
+        const diff = Math.abs(candleTime - hoverTime)
+        if (diff < minDiff) {
+          minDiff = diff
+          nearestBar = candle
+        }
+      }
+
       setHoverInfo({
         price,
-        time,
+        time: new Date(hoverTime).toISOString(),
+        barTime: nearestBar.timestamp,
         xPixel: x,
         yPixel: y,
       })
@@ -301,7 +323,7 @@ export function ParquetViewer({ workingDirectory }: ParquetViewerProps) {
       container.removeEventListener('mousemove', handleMouseMove)
       container.removeEventListener('mouseleave', handleMouseLeave)
     }
-  }, [visibleCandles.length])
+  }, [visibleCandles])
 
   // Chart layout with current bar marker - matches sandbox style
   const chartLayout: Partial<Layout> = useMemo(() => {
@@ -527,7 +549,7 @@ export function ParquetViewer({ workingDirectory }: ParquetViewerProps) {
                 {hoverInfo.price.toFixed(5)}
               </div>
             )}
-            {/* Time label on X-axis (bottom) - 24hr format to match axis */}
+            {/* Time label on X-axis (bottom) - shows actual bar time */}
             {hoverInfo && (
               <div
                 className="absolute bg-gray-600 text-white text-xs font-mono px-2 py-0.5 rounded-sm pointer-events-none z-20"
@@ -537,93 +559,95 @@ export function ParquetViewer({ workingDirectory }: ParquetViewerProps) {
                   transform: 'translateX(-50%)',
                 }}
               >
-                {new Date(hoverInfo.time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })}
+                {new Date(hoverInfo.barTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })}
               </div>
             )}
           </div>
         )}
 
-        {/* MMLC State Overlay - Top Right Corner */}
+        {/* MMLC State Overlay - Positionable */}
         {selectedFile && currentCandle && (
-          <div className="absolute top-3 right-3 bg-background/85 backdrop-blur-sm rounded-lg border border-border/60 p-3 z-20 shadow-lg">
-            {/* Time */}
-            <div className="text-sm text-muted-foreground mb-2 font-mono">
-              {currentCandle.timestamp}
-            </div>
-
-            {/* Main State Row */}
-            <div className="flex items-center gap-4 text-base">
-              {/* Level */}
-              <div className="flex items-center gap-2">
-                <span className="text-muted-foreground text-sm">L</span>
-                <span
-                  className={`font-mono font-bold text-xl ${
-                    currentState?.level === 1
-                      ? 'text-teal-400'
-                      : currentState?.level === 2
-                        ? 'text-amber-400'
-                        : currentState?.level === 3
-                          ? 'text-orange-400'
-                          : currentState?.level === 4
-                            ? 'text-red-400'
-                            : 'text-muted-foreground'
-                  }`}
+          <div className={`absolute z-20 ${
+            overlayPosition === 'top-right' ? 'top-3 right-3' :
+            overlayPosition === 'top-left' ? 'top-3 left-3' :
+            overlayPosition === 'bottom-right' ? 'bottom-3 right-3' :
+            'bottom-3 left-3'
+          }`}>
+            <div className="bg-background/90 backdrop-blur-sm rounded border border-border/60 shadow-lg">
+              {/* Header with position selector */}
+              <div className="flex items-center justify-between gap-4 px-2.5 py-1 border-b border-border/40">
+                <span className="font-mono text-xs text-muted-foreground">{currentCandle.timestamp.split('T')[1] || currentCandle.timestamp.split(' ')[1] || ''}</span>
+                <select
+                  value={overlayPosition}
+                  onChange={(e) => setOverlayPosition(e.target.value as typeof overlayPosition)}
+                  className="text-xs bg-transparent border-none text-muted-foreground cursor-pointer focus:outline-none"
+                  title="Move overlay position"
                 >
-                  {currentState?.level ?? '—'}
-                </span>
+                  <option value="top-right">↗</option>
+                  <option value="top-left">↖</option>
+                  <option value="bottom-right">↘</option>
+                  <option value="bottom-left">↙</option>
+                </select>
               </div>
 
-              {/* Event */}
-              <div className="flex items-center gap-2">
-                <span
-                  className={`font-mono font-semibold ${
-                    currentState?.event === 'SPAWN'
-                      ? 'text-cyan-400'
-                      : currentState?.event === 'EXTENSION'
-                        ? 'text-purple-400'
-                        : currentState?.event === 'REVERSAL'
-                          ? 'text-pink-400'
-                          : 'text-muted-foreground'
-                  }`}
-                >
-                  {currentState?.event || '—'}
+              {/* State Row */}
+              <div className="flex items-center gap-3 px-2 py-1 border-b border-border/40">
+                <span className={`font-mono font-bold text-base ${
+                  currentState?.level === 1 ? 'text-teal-400' :
+                  currentState?.level === 2 ? 'text-amber-400' :
+                  currentState?.level === 3 ? 'text-orange-400' :
+                  currentState?.level === 4 ? 'text-red-400' : 'text-muted-foreground'
+                }`}>
+                  L{currentState?.level ?? '—'}
                 </span>
-              </div>
-
-              {/* Direction */}
-              <div className="flex items-center">
+                <span className={`font-mono text-base ${
+                  currentState?.event === 'SPAWN' ? 'text-cyan-400' :
+                  currentState?.event === 'EXTENSION' ? 'text-purple-400' :
+                  currentState?.event === 'REVERSAL' ? 'text-pink-400' : 'text-muted-foreground'
+                }`}>
+                  {currentState?.event?.slice(0, 3) || '—'}
+                </span>
                 {currentState?.dir === 'UP' ? (
-                  <ArrowUp className="h-6 w-6 text-teal-400" />
+                  <ArrowUp className="h-5 w-5 text-teal-400" />
                 ) : currentState?.dir === 'DOWN' ? (
-                  <ArrowDown className="h-6 w-6 text-red-400" />
+                  <ArrowDown className="h-5 w-5 text-red-400" />
                 ) : (
                   <Minus className="h-5 w-5 text-muted-foreground" />
                 )}
               </div>
-            </div>
 
-            {/* Outcomes Row */}
-            <div className="flex items-center gap-4 mt-2 text-sm">
-              <div className="flex items-center gap-1.5">
-                <ArrowUp className="h-4 w-4 text-muted-foreground" />
-                <span
-                  className={`font-mono ${
-                    (currentState?.out_max_up ?? 0) > 0 ? 'text-teal-400' : 'text-muted-foreground'
-                  }`}
-                >
-                  {currentState?.out_max_up?.toFixed(5) || '—'}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-1.5">
-                <ArrowDown className="h-4 w-4 text-muted-foreground" />
-                <span
-                  className={`font-mono ${
-                    (currentState?.out_max_down ?? 0) < 0 ? 'text-red-400' : 'text-muted-foreground'
-                  }`}
-                >
-                  {currentState?.out_max_down?.toFixed(5) || '—'}
-                </span>
+              {/* Targets Grid */}
+              <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 px-2 py-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground text-xs">Nxt</span>
+                  <span className={`font-mono text-base ${(currentState?.out_next ?? 0) > 0 ? 'text-teal-400' : (currentState?.out_next ?? 0) < 0 ? 'text-red-400' : 'text-muted-foreground'}`}>
+                    {currentState?.out_next != null ? (currentState.out_next >= 0 ? '+' : '') + currentState.out_next.toFixed(4) : '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground text-xs">Nxt5</span>
+                  <span className={`font-mono text-base ${(currentState?.out_next5 ?? 0) > 0 ? 'text-teal-400' : (currentState?.out_next5 ?? 0) < 0 ? 'text-red-400' : 'text-muted-foreground'}`}>
+                    {currentState?.out_next5 != null ? (currentState.out_next5 >= 0 ? '+' : '') + currentState.out_next5.toFixed(4) : '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground text-xs">Sess</span>
+                  <span className={`font-mono text-base ${(currentState?.out_sess ?? 0) > 0 ? 'text-teal-400' : (currentState?.out_sess ?? 0) < 0 ? 'text-red-400' : 'text-muted-foreground'}`}>
+                    {currentState?.out_sess != null ? (currentState.out_sess >= 0 ? '+' : '') + currentState.out_sess.toFixed(4) : '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground text-xs">max up</span>
+                  <span className={`font-mono text-base ${(currentState?.out_max_up ?? 0) > 0 ? 'text-teal-400' : 'text-muted-foreground'}`}>
+                    {currentState?.out_max_up != null ? '+' + currentState.out_max_up.toFixed(4) : '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground text-xs">max dn</span>
+                  <span className={`font-mono text-base ${(currentState?.out_max_down ?? 0) < 0 ? 'text-red-400' : 'text-muted-foreground'}`}>
+                    {currentState?.out_max_down != null ? currentState.out_max_down.toFixed(4) : '—'}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
