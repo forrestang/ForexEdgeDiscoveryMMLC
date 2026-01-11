@@ -730,6 +730,47 @@ export const api = {
         }),
       }),
 
+    // Delete report
+    deleteReport: (filename: string, workingDirectory?: string): Promise<{
+      status: string;
+      message: string;
+    }> =>
+      fetchApi('/transformer/delete-report', {
+        method: 'POST',
+        body: JSON.stringify({
+          filename: filename,
+          working_directory: workingDirectory,
+        }),
+      }),
+
+    // Delete multiple reports
+    deleteReportsBulk: (filenames: string[], workingDirectory?: string): Promise<{
+      status: string;
+      message: string;
+      deleted: number;
+    }> =>
+      fetchApi('/transformer/delete-reports-bulk', {
+        method: 'POST',
+        body: JSON.stringify({
+          filenames: filenames,
+          working_directory: workingDirectory,
+        }),
+      }),
+
+    // Delete multiple models
+    deleteModelsBulk: (modelNames: string[], workingDirectory?: string): Promise<{
+      status: string;
+      message: string;
+      deleted: number;
+    }> =>
+      fetchApi('/transformer/delete-models-bulk', {
+        method: 'POST',
+        body: JSON.stringify({
+          model_names: modelNames,
+          working_directory: workingDirectory,
+        }),
+      }),
+
     // Parquet viewer endpoints
     getParquetFiles: (workingDirectory?: string): Promise<{
       files: Array<{
@@ -825,7 +866,9 @@ export const api = {
     addToQueue: (params: {
       card_id: string;
       model_name: string;
+      parquet_file: string;
       session_option: string;
+      target_outcome?: string;
       sequence_length?: number;
       batch_size?: number;
       d_model?: number;
@@ -848,7 +891,9 @@ export const api = {
           config: {
             card_id: params.card_id,
             model_name: params.model_name,
+            parquet_file: params.parquet_file,
             session_option: params.session_option,
+            target_outcome: params.target_outcome ?? 'max_up',
             sequence_length: params.sequence_length ?? 64,
             batch_size: params.batch_size ?? 32,
             d_model: params.d_model ?? 128,
@@ -892,6 +937,79 @@ export const api = {
       status: string;
       message: string;
     }> => fetchApi('/transformer/queue/clear', { method: 'POST' }),
+
+    // Validation data generation
+    generateValidationFromSource: (params: {
+      source_parquet: string;
+      test_type: 'sanity' | 'memory' | 'logic' | 'next' | 'next5' | 'close' | 'max_up' | 'max_down';
+      target_session?: string;
+      timeframe?: string;
+      adr_value?: number;
+      seed?: number;
+      working_directory?: string;
+    }): Promise<{
+      status: string;
+      message: string;
+      output_file: string | null;
+      rows: number;
+      sessions_found: number;
+    }> =>
+      fetchApi('/transformer/validation/generate-from-source', {
+        method: 'POST',
+        body: JSON.stringify({
+          source_parquet: params.source_parquet,
+          test_type: params.test_type,
+          target_session: params.target_session ?? 'lon',
+          timeframe: params.timeframe ?? 'M5',
+          adr_value: params.adr_value ?? 0.005,
+          seed: params.seed ?? 42,
+          working_directory: params.working_directory,
+        }),
+      }),
+
+    // Reports endpoints
+    getReports: (workingDirectory?: string): Promise<{
+      reports: Array<{
+        filename: string;
+        model_name: string;
+        timestamp: string;
+        directional_accuracy: number;
+        r_squared: number;
+        best_loss: number;
+        total_epochs: number;
+        target_session: string | null;
+        elapsed_seconds: number | null;
+      }>;
+    }> => {
+      const params = workingDirectory
+        ? `?working_directory=${encodeURIComponent(workingDirectory)}`
+        : '';
+      return fetchApi(`/transformer/reports${params}`);
+    },
+
+    getReportDetail: (filename: string, workingDirectory?: string): Promise<{
+      report: {
+        filename: string;
+        model_name: string;
+        timestamp: string;
+        config: Record<string, unknown>;
+        summary: Record<string, unknown>;
+        epochs: Array<{
+          epoch: number;
+          train_loss: number;
+          val_loss: number | null;
+          directional_accuracy: number | null;
+          r_squared: number | null;
+          max_error: number | null;
+          grad_norm: number | null;
+        }>;
+      };
+    }> => {
+      const params = workingDirectory
+        ? `?working_directory=${encodeURIComponent(workingDirectory)}`
+        : '';
+      return fetchApi(`/transformer/reports/${encodeURIComponent(filename)}${params}`);
+    },
   },
 
   mmlcDev: {

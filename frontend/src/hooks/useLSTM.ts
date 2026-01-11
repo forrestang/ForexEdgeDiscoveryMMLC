@@ -132,3 +132,27 @@ export function useDeleteBridgedParquet() {
   })
 }
 
+// ================================================================
+// Validation Data Generation Hooks
+// ================================================================
+
+export function useGenerateValidationFromSource() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (params: {
+      source_parquet: string
+      test_type: 'sanity' | 'memory' | 'logic' | 'next' | 'next5' | 'close' | 'max_up' | 'max_down'
+      target_session?: string
+      timeframe?: string
+      adr_value?: number
+      seed?: number
+      working_directory?: string
+    }) => api.transformer.generateValidationFromSource(params),
+    onSuccess: (_, variables) => {
+      // Invalidate bridged parquets list since validation files go there
+      queryClient.invalidateQueries({ queryKey: ['bridge-bridged-parquets', variables.working_directory] })
+    },
+  })
+}
+

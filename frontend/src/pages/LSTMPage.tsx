@@ -14,6 +14,7 @@ import {
   useBridgedParquets,
   useBridgeFiles,
   useDeleteBridgedParquet,
+  useGenerateValidationFromSource,
 } from '@/hooks/useLSTM'
 import { TransformerTab } from '@/components/sidebar/TransformerTab'
 import { ParquetViewer } from '@/components/chart/ParquetViewer'
@@ -35,7 +36,7 @@ import {
   ChevronsDownUp,
   ChevronsUpDown,
   FlaskConical,
-  Beaker,
+  AlertTriangle,
 } from 'lucide-react'
 
 interface FileInfo {
@@ -72,6 +73,9 @@ export function LSTMPage() {
   const [stage1DataCollapsed, setStage1DataCollapsed] = usePersistedState('lstmStage1DataCollapsed', false)
   const [stage2DataCollapsed, setStage2DataCollapsed] = usePersistedState('lstmStage2DataCollapsed', false)
 
+  // Persisted Pipeline Data panel collapsed state
+  const [pipelineDataCollapsed, setPipelineDataCollapsed] = usePersistedState('lstmPipelineDataCollapsed', false)
+
   // Stage 2: Bridge selection (input selection for bridging)
   const [selectedRawParquets, setSelectedRawParquets] = useState<Set<string>>(new Set())
 
@@ -81,6 +85,11 @@ export function LSTMPage() {
 
   // Persisted validation data generation collapsed state
   const [validationCollapsed, setValidationCollapsed] = usePersistedState('lstmValidationCollapsed', false)
+
+  // Validation generation state
+  const [validationSourceParquet, setValidationSourceParquet] = usePersistedState<string>('lstmValidationSourceParquet', '')
+  const [validationTestType, setValidationTestType] = usePersistedState<'sanity' | 'memory' | 'logic' | 'next' | 'next5' | 'close' | 'max_up' | 'max_down'>('lstmValidationTestType', 'sanity')
+  const [validationTargetSession, setValidationTargetSession] = usePersistedState('lstmValidationTargetSession', 'lon')
 
   // Data queries
   const {
@@ -112,6 +121,7 @@ export function LSTMPage() {
   } = useBridgedParquets(workingDirectory)
   const bridgeFilesMutation = useBridgeFiles()
   const deleteBridgedMutation = useDeleteBridgedParquet()
+  const generateValidationMutation = useGenerateValidationFromSource()
 
   // Group files by pair
   const filesByPair = useMemo(() => {
@@ -268,6 +278,25 @@ export function LSTMPage() {
     }
   }
 
+  // Validation generation handler
+  const handleGenerateValidation = () => {
+    if (!validationSourceParquet) return
+
+    // Auto-detect timeframe from enriched parquet filename (e.g., "_M10_bridged.parquet")
+    const timeframeMatch = validationSourceParquet.match(/_([A-Z]\d+)_/)
+    const detectedTimeframe = timeframeMatch ? timeframeMatch[1] : 'M5'
+
+    generateValidationMutation.mutate({
+      source_parquet: validationSourceParquet,
+      test_type: validationTestType,
+      target_session: validationTargetSession,
+      timeframe: detectedTimeframe,
+      adr_value: 0.0050,
+      seed: 42,
+      working_directory: workingDirectory,
+    })
+  }
+
   // Data panel selection helpers - Stage 1 (raw parquets)
   const toggleStage1Parquet = (filename: string) => {
     setSelectedStage1Parquets((prev) => {
@@ -357,16 +386,18 @@ export function LSTMPage() {
 
   const isBridging = bridgeFilesMutation.isPending
   const isDeletingBatch = deleteParquetsBatchMutation.isPending
+  const isGeneratingValidation = generateValidationMutation.isPending
 
   const isCreating = createFromFilesMutation.isPending
 
   // Collapse all stages toggle
-  const allStagesCollapsed = stage1Collapsed && stage2Collapsed && validationCollapsed
+  const allStagesCollapsed = stage1Collapsed && stage2Collapsed && validationCollapsed && pipelineDataCollapsed
   const toggleAllStages = () => {
     const newState = !allStagesCollapsed
     setStage1Collapsed(newState)
     setStage2Collapsed(newState)
     setValidationCollapsed(newState)
+    setPipelineDataCollapsed(newState)
   }
 
   // Count selected pairs for summary
@@ -383,7 +414,7 @@ export function LSTMPage() {
   const totalParquetsToCreate = selectedPairsCount * selectedTimeframes.length
 
   return (
-    <PanelGroup direction="horizontal" className="h-full">
+    <PanelGroup direction="horizontal" className="h-full overflow-hidden">
       {/* Resizable Sidebar */}
       <Panel defaultSize={25} minSize={15} maxSize={50}>
         <div className="h-full flex flex-col bg-card border-r border-border">
@@ -841,7 +872,7 @@ export function LSTMPage() {
                   )}
                 </div>
 
-                {/* Stage 3: Generate Validation Data */}
+                {/* Generate Validation Data */}
                 <div className="p-4 space-y-4 border-t border-border">
                   <div className="flex items-center justify-between">
                     <button
@@ -855,9 +886,9 @@ export function LSTMPage() {
                           <ChevronDown className="h-4 w-4" />
                         )}
                       </span>
-                      <Beaker className="h-4 w-4 text-purple-500" />
+                      <AlertTriangle className="h-4 w-4 text-yellow-500" />
                       <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground group-hover:text-foreground transition-colors">
-                        Stage 3: Generate Validation Data
+                        Generate Validation Data
                       </span>
                     </button>
                   </div>
@@ -865,32 +896,136 @@ export function LSTMPage() {
                   {!validationCollapsed && (
                     <div className="space-y-3">
                       <p className="text-xs text-muted-foreground">
-                        Generate synthetic validation data from bridged parquets to test model performance.
+                        Generate validation data by cloning an enriched parquet. Preserves all columns (volume, ADR, etc.) and only modifies the target session's state/outcome columns with test patterns.
                       </p>
 
-                      {/* Placeholder for validation data generation controls */}
-                      <div className="text-xs text-muted-foreground/60 p-4 text-center border border-dashed border-purple-500/30 rounded bg-purple-500/5">
-                        <FlaskConical className="h-8 w-8 mx-auto mb-2 text-purple-500/40" />
-                        <p>Validation data generation coming soon</p>
-                        <p className="text-[10px] mt-1">Will use bridged parquets to create mock data for model validation</p>
+                      {/* Source Parquet Selection */}
+                      <div className="space-y-1.5">
+                        <label className="text-xs text-muted-foreground">Source Parquet (from Stage 2 Enriched)</label>
+                        <select
+                          value={validationSourceParquet}
+                          onChange={(e) => setValidationSourceParquet(e.target.value)}
+                          className="w-full h-8 text-xs rounded-md border border-border bg-background px-2"
+                        >
+                          <option value="">Select an enriched parquet...</option>
+                          {bridgedParquetsResponse?.parquets?.map((p) => (
+                            <option key={p.name} value={p.name}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
                       </div>
+
+                      {/* Test Type Selection */}
+                      <div className="space-y-1.5">
+                        <label className="text-xs text-muted-foreground">Test Type</label>
+                        <div className="flex flex-wrap gap-1.5">
+                          {(['sanity', 'memory', 'logic', 'next', 'next5', 'close', 'max_up', 'max_down'] as const).map((type) => (
+                            <button
+                              key={type}
+                              onClick={() => setValidationTestType(type)}
+                              className={`px-2.5 py-1.5 text-xs rounded border transition-colors ${
+                                validationTestType === type
+                                  ? 'bg-purple-500/20 border-purple-500/50 text-purple-400'
+                                  : 'bg-background/50 border-border/50 text-muted-foreground hover:border-purple-500/30'
+                              }`}
+                            >
+                              {type === 'max_up' ? 'Max Up' : type === 'max_down' ? 'Max Down' : type === 'next5' ? 'Next5' : type.charAt(0).toUpperCase() + type.slice(1)}
+                            </button>
+                          ))}
+                        </div>
+                        <p className="text-[10px] text-muted-foreground/60">
+                          {validationTestType === 'sanity' && 'Level=1 → +0.01, Level=2 → -0.01 (alternating sessions)'}
+                          {validationTestType === 'memory' && 'Bar 0 determines session outcome (tests attention mechanism)'}
+                          {validationTestType === 'logic' && 'Level=1 + SPAWN → +0.01, else -0.01 (tests feature fusion)'}
+                          {validationTestType === 'next' && 'dir=UP → +0.5, dir=DOWN → -0.5. Train with "Next Bar" target.'}
+                          {validationTestType === 'next5' && 'dir=UP → +2.0, dir=DOWN → -2.0 (1-bar is opposite). Train with "Next 5 Bars" target.'}
+                          {validationTestType === 'close' && 'Bar 0 level=1 → +2.0, level=2 → -2.0. Train with "Session Close" target.'}
+                          {validationTestType === 'max_up' && 'Level=1 + SPAWN → +5.0 spike (flat close). Train with "Max Up" target.'}
+                          {validationTestType === 'max_down' && 'Level=2 → -3.0 crash, Level=1 → -0.1 safe. Train with "Max Down" target.'}
+                        </p>
+                      </div>
+
+                      {/* Target Session Selection */}
+                      <div className="space-y-1.5">
+                        <label className="text-xs text-muted-foreground">Target Session</label>
+                        <div className="flex flex-wrap gap-1.5">
+                          {['asia', 'lon', 'ny', 'day', 'asialon', 'lonny'].map((sess) => (
+                            <button
+                              key={sess}
+                              onClick={() => setValidationTargetSession(sess)}
+                              className={`px-2 py-1 text-xs rounded border transition-colors ${
+                                validationTargetSession === sess
+                                  ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-400'
+                                  : 'bg-background/50 border-border/50 text-muted-foreground hover:border-cyan-500/30'
+                              }`}
+                            >
+                              {sess}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Generate Button */}
+                      <Button
+                        onClick={handleGenerateValidation}
+                        disabled={!validationSourceParquet || isGeneratingValidation}
+                        className="w-full h-9 text-xs bg-purple-600 hover:bg-purple-700"
+                      >
+                        {isGeneratingValidation ? (
+                          <>
+                            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                            Generating...
+                          </>
+                        ) : (
+                          <>
+                            <FlaskConical className="mr-2 h-3.5 w-3.5" />
+                            Generate test_{validationTestType}.parquet
+                          </>
+                        )}
+                      </Button>
+
+                      {/* Status Messages */}
+                      {generateValidationMutation.isSuccess && (
+                        <div className="text-xs text-purple-500/90 bg-purple-500/10 px-2 py-1.5 rounded border border-purple-500/20">
+                          <div>✓ {generateValidationMutation.data.message}</div>
+                          <div className="text-purple-500/60 text-[10px]">
+                            {generateValidationMutation.data.rows.toLocaleString()} rows | {generateValidationMutation.data.sessions_found} sessions found
+                          </div>
+                        </div>
+                      )}
+                      {generateValidationMutation.isError && (
+                        <div className="text-xs text-red-500/90 bg-red-500/10 px-2 py-1.5 rounded border border-red-500/20">
+                          Error: {generateValidationMutation.error.message}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
 
                 {/* Pipeline Data Panel - All Outputs */}
-                <div className="flex-1 p-4 overflow-auto space-y-3 border-t-2 border-border bg-background/20">
-                  {/* Header with selection count */}
+                <div className="p-4 space-y-4 border-t border-border">
+                  {/* Collapsible Header */}
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setPipelineDataCollapsed(!pipelineDataCollapsed)}
+                      className="flex items-center gap-2 hover:text-foreground transition-colors group"
+                    >
+                      <span className="text-muted-foreground group-hover:text-foreground transition-colors">
+                        {pipelineDataCollapsed ? (
+                          <ChevronRight className="h-4 w-4" />
+                        ) : (
+                          <ChevronDown className="h-4 w-4" />
+                        )}
+                      </span>
                       <Database className="h-4 w-4 text-primary" />
-                      <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground group-hover:text-foreground transition-colors">
                         Pipeline Data
                       </span>
                       <span className="text-xs text-muted-foreground">
                         ({(parquetsResponse?.parquets?.length || 0) + (bridgedParquetsResponse?.parquets?.length || 0)})
                       </span>
-                    </div>
+                    </button>
                     {totalSelectedFiles > 0 && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">
                         {totalSelectedFiles} selected
@@ -898,254 +1033,258 @@ export function LSTMPage() {
                     )}
                   </div>
 
-                  {/* Global selection controls */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={selectAllDataFiles}
-                        className="text-[10px] px-2 py-1 text-muted-foreground hover:text-primary border border-border/50 rounded hover:border-primary/50 transition-colors"
-                      >
-                        Select All
-                      </button>
-                      <button
-                        onClick={selectNoneDataFiles}
-                        className="text-[10px] px-2 py-1 text-muted-foreground hover:text-primary border border-border/50 rounded hover:border-primary/50 transition-colors"
-                      >
-                        Select None
-                      </button>
-                    </div>
-                    <button
-                      onClick={handleDeleteSelectedFiles}
-                      disabled={totalSelectedFiles === 0 || isDeletingBatch}
-                      className="flex items-center gap-1 text-[10px] px-2 py-1 text-red-400 hover:text-red-300 border border-red-500/30 rounded hover:border-red-500/50 hover:bg-red-500/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {isDeletingBatch ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <Trash2 className="h-3 w-3" />
-                      )}
-                      Delete Selected
-                    </button>
-                  </div>
-
-                  {/* Scrollable content area */}
-                  <div className="space-y-3 overflow-auto pr-1" style={{ maxHeight: 'calc(100% - 80px)' }}>
-                    {/* Stage 1: Raw Parquets */}
-                    <div className="rounded-md border border-border/30 overflow-hidden">
-                      <button
-                        onClick={() => setStage1DataCollapsed(!stage1DataCollapsed)}
-                        className="flex items-center justify-between w-full px-3 py-2 bg-emerald-500/5 hover:bg-emerald-500/10 transition-colors"
-                      >
+                  {!pipelineDataCollapsed && (
+                    <>
+                      {/* Global selection controls */}
+                      <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                          <span className="text-muted-foreground">
-                            {stage1DataCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                          </span>
-                          <Settings className="h-3.5 w-3.5 text-emerald-500" />
-                          <span className="text-xs font-medium text-foreground/80">Stage 1: Raw Parquets</span>
-                          <span className="text-[10px] text-muted-foreground">
-                            ({parquetsResponse?.parquets?.length || 0})
-                          </span>
+                          <button
+                            onClick={selectAllDataFiles}
+                            className="text-[10px] px-2 py-1 text-muted-foreground hover:text-primary border border-border/50 rounded hover:border-primary/50 transition-colors"
+                          >
+                            Select All
+                          </button>
+                          <button
+                            onClick={selectNoneDataFiles}
+                            className="text-[10px] px-2 py-1 text-muted-foreground hover:text-primary border border-border/50 rounded hover:border-primary/50 transition-colors"
+                          >
+                            Select None
+                          </button>
                         </div>
-                        {selectedStage1Parquets.size > 0 && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400">
-                            {selectedStage1Parquets.size} selected
-                          </span>
-                        )}
-                      </button>
-
-                      {!stage1DataCollapsed && (
-                        <div className="p-2 space-y-1 max-h-[200px] overflow-auto">
-                          {parquetsLoading ? (
-                            <div className="flex items-center gap-2 text-xs text-muted-foreground p-2">
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                              Loading...
-                            </div>
-                          ) : parquetsResponse?.parquets && parquetsResponse.parquets.length > 0 ? (
-                            parquetsResponse.parquets.map((parquet) => {
-                              const isSelected = selectedStage1Parquets.has(parquet.name)
-                              return (
-                                <label
-                                  key={parquet.name}
-                                  className={`flex items-center justify-between px-2.5 py-2 rounded cursor-pointer transition-colors ${
-                                    isSelected
-                                      ? 'bg-emerald-500/10 border border-emerald-500/30'
-                                      : 'bg-background/30 border border-border/20 hover:border-emerald-500/20'
-                                  }`}
-                                >
-                                  <div className="flex items-center gap-2">
-                                    <input
-                                      type="checkbox"
-                                      checked={isSelected}
-                                      onChange={() => toggleStage1Parquet(parquet.name)}
-                                      className="rounded border-border text-emerald-500 focus:ring-emerald-500/50 h-3 w-3"
-                                    />
-                                    <div className="flex flex-col">
-                                      <div className="flex items-center gap-2">
-                                        <span className="text-xs font-medium text-emerald-500/90">
-                                          {parquet.pair || 'Unknown'}
-                                        </span>
-                                        {parquet.timeframe && (
-                                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary">
-                                            {parquet.timeframe}
-                                          </span>
-                                        )}
-                                        {parquet.adr_period && (
-                                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">
-                                            ADR{parquet.adr_period}
-                                          </span>
-                                        )}
-                                      </div>
-                                      <span className="text-[10px] text-muted-foreground/60">
-                                        {parquet.start_date} → {parquet.end_date} | {parquet.rows.toLocaleString()} rows
-                                      </span>
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-[10px] text-muted-foreground/50">
-                                      {parquet.size_mb.toFixed(1)}MB
-                                    </span>
-                                    <button
-                                      onClick={(e) => {
-                                        e.preventDefault()
-                                        e.stopPropagation()
-                                        handleDeleteParquet(parquet.name)
-                                      }}
-                                      className="p-1 rounded hover:bg-red-500/20 text-red-500/70 hover:text-red-500 transition-all"
-                                      title="Delete"
-                                    >
-                                      <Trash2 className="h-3 w-3" />
-                                    </button>
-                                  </div>
-                                </label>
-                              )
-                            })
+                        <button
+                          onClick={handleDeleteSelectedFiles}
+                          disabled={totalSelectedFiles === 0 || isDeletingBatch}
+                          className="flex items-center gap-1 text-[10px] px-2 py-1 text-red-400 hover:text-red-300 border border-red-500/30 rounded hover:border-red-500/50 hover:bg-red-500/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {isDeletingBatch ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
                           ) : (
-                            <div className="text-xs text-muted-foreground/60 p-2 text-center">
-                              No raw parquets created yet
+                            <Trash2 className="h-3 w-3" />
+                          )}
+                          Delete Selected
+                        </button>
+                      </div>
+
+                      {/* Scrollable content area */}
+                      <div className="space-y-3 overflow-auto pr-1" style={{ maxHeight: 'calc(100% - 80px)' }}>
+                        {/* Stage 1: Raw Parquets */}
+                        <div className="rounded-md border border-border/30 overflow-hidden">
+                          <button
+                            onClick={() => setStage1DataCollapsed(!stage1DataCollapsed)}
+                            className="flex items-center justify-between w-full px-3 py-2 bg-emerald-500/5 hover:bg-emerald-500/10 transition-colors"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="text-muted-foreground">
+                                {stage1DataCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                              </span>
+                              <Settings className="h-3.5 w-3.5 text-emerald-500" />
+                              <span className="text-xs font-medium text-foreground/80">Stage 1: Raw Parquets</span>
+                              <span className="text-[10px] text-muted-foreground">
+                                ({parquetsResponse?.parquets?.length || 0})
+                              </span>
+                            </div>
+                            {selectedStage1Parquets.size > 0 && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400">
+                                {selectedStage1Parquets.size} selected
+                              </span>
+                            )}
+                          </button>
+
+                          {!stage1DataCollapsed && (
+                            <div className="p-2 space-y-1 max-h-[200px] overflow-auto">
+                              {parquetsLoading ? (
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground p-2">
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                  Loading...
+                                </div>
+                              ) : parquetsResponse?.parquets && parquetsResponse.parquets.length > 0 ? (
+                                parquetsResponse.parquets.map((parquet) => {
+                                  const isSelected = selectedStage1Parquets.has(parquet.name)
+                                  return (
+                                    <label
+                                      key={parquet.name}
+                                      className={`flex items-center justify-between px-2.5 py-2 rounded cursor-pointer transition-colors ${
+                                        isSelected
+                                          ? 'bg-emerald-500/10 border border-emerald-500/30'
+                                          : 'bg-background/30 border border-border/20 hover:border-emerald-500/20'
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <input
+                                          type="checkbox"
+                                          checked={isSelected}
+                                          onChange={() => toggleStage1Parquet(parquet.name)}
+                                          className="rounded border-border text-emerald-500 focus:ring-emerald-500/50 h-3 w-3"
+                                        />
+                                        <div className="flex flex-col">
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-xs font-medium text-emerald-500/90">
+                                              {parquet.pair || 'Unknown'}
+                                            </span>
+                                            {parquet.timeframe && (
+                                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary">
+                                                {parquet.timeframe}
+                                              </span>
+                                            )}
+                                            {parquet.adr_period && (
+                                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">
+                                                ADR{parquet.adr_period}
+                                              </span>
+                                            )}
+                                          </div>
+                                          <span className="text-[10px] text-muted-foreground/60">
+                                            {parquet.start_date} → {parquet.end_date} | {parquet.rows.toLocaleString()} rows
+                                          </span>
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[10px] text-muted-foreground/50">
+                                          {parquet.size_mb.toFixed(1)}MB
+                                        </span>
+                                        <button
+                                          onClick={(e) => {
+                                            e.preventDefault()
+                                            e.stopPropagation()
+                                            handleDeleteParquet(parquet.name)
+                                          }}
+                                          className="p-1 rounded hover:bg-red-500/20 text-red-500/70 hover:text-red-500 transition-all"
+                                          title="Delete"
+                                        >
+                                          <Trash2 className="h-3 w-3" />
+                                        </button>
+                                      </div>
+                                    </label>
+                                  )
+                                })
+                              ) : (
+                                <div className="text-xs text-muted-foreground/60 p-2 text-center">
+                                  No raw parquets created yet
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
-                      )}
-                    </div>
 
-                    {/* Stage 2: Bridged Parquets */}
-                    <div className="rounded-md border border-border/30 overflow-hidden">
-                      <button
-                        onClick={() => setStage2DataCollapsed(!stage2DataCollapsed)}
-                        className="flex items-center justify-between w-full px-3 py-2 bg-cyan-500/5 hover:bg-cyan-500/10 transition-colors"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="text-muted-foreground">
-                            {stage2DataCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                          </span>
-                          <Link className="h-3.5 w-3.5 text-cyan-500" />
-                          <span className="text-xs font-medium text-foreground/80">Stage 2: Bridged Parquets</span>
-                          <span className="text-[10px] text-muted-foreground">
-                            ({bridgedParquetsResponse?.parquets?.length || 0})
-                          </span>
-                        </div>
-                        {selectedBridgedParquets.size > 0 && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-400">
-                            {selectedBridgedParquets.size} selected
-                          </span>
-                        )}
-                      </button>
-
-                      {!stage2DataCollapsed && (
-                        <div className="p-2 space-y-1 max-h-[200px] overflow-auto">
-                          {bridgedParquetsLoading ? (
-                            <div className="flex items-center gap-2 text-xs text-muted-foreground p-2">
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                              Loading...
+                        {/* Stage 2: Bridged Parquets */}
+                        <div className="rounded-md border border-border/30 overflow-hidden">
+                          <button
+                            onClick={() => setStage2DataCollapsed(!stage2DataCollapsed)}
+                            className="flex items-center justify-between w-full px-3 py-2 bg-cyan-500/5 hover:bg-cyan-500/10 transition-colors"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="text-muted-foreground">
+                                {stage2DataCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                              </span>
+                              <Link className="h-3.5 w-3.5 text-cyan-500" />
+                              <span className="text-xs font-medium text-foreground/80">Stage 2: Bridged Parquets</span>
+                              <span className="text-[10px] text-muted-foreground">
+                                ({bridgedParquetsResponse?.parquets?.length || 0})
+                              </span>
                             </div>
-                          ) : bridgedParquetsResponse?.parquets && bridgedParquetsResponse.parquets.length > 0 ? (
-                            bridgedParquetsResponse.parquets.map((parquet) => {
-                              const isSelected = selectedBridgedParquets.has(parquet.name)
-                              return (
-                                <label
-                                  key={parquet.name}
-                                  className={`flex items-center justify-between px-2.5 py-2 rounded cursor-pointer transition-colors ${
-                                    isSelected
-                                      ? 'bg-cyan-500/10 border border-cyan-500/30'
-                                      : 'bg-background/30 border border-border/20 hover:border-cyan-500/20'
-                                  }`}
-                                >
-                                  <div className="flex items-center gap-2">
-                                    <input
-                                      type="checkbox"
-                                      checked={isSelected}
-                                      onChange={() => toggleBridgedParquet(parquet.name)}
-                                      className="rounded border-border text-cyan-500 focus:ring-cyan-500/50 h-3 w-3"
-                                    />
-                                    <div className="flex flex-col">
-                                      <div className="flex items-center gap-2">
-                                        <span className="text-xs font-medium text-cyan-500/90">
-                                          {parquet.pair || parquet.name.replace('_bridged.parquet', '')}
-                                        </span>
-                                        {parquet.timeframe && (
-                                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary">
-                                            {parquet.timeframe}
-                                          </span>
-                                        )}
-                                        {parquet.adr_period && (
-                                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">
-                                            ADR{parquet.adr_period}
-                                          </span>
-                                        )}
-                                      </div>
-                                      <span className="text-[10px] text-muted-foreground/60">
-                                        {parquet.start_date && parquet.end_date
-                                          ? `${parquet.start_date} → ${parquet.end_date} | `
-                                          : ''
-                                        }{parquet.rows.toLocaleString()} rows
-                                      </span>
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-[10px] text-muted-foreground/50">
-                                      {parquet.size_mb.toFixed(1)}MB
-                                    </span>
-                                    <button
-                                      onClick={(e) => {
-                                        e.preventDefault()
-                                        e.stopPropagation()
-                                        handleDeleteBridged(parquet.name)
-                                      }}
-                                      className="p-1 rounded hover:bg-red-500/20 text-red-500/70 hover:text-red-500 transition-all"
-                                      title="Delete"
+                            {selectedBridgedParquets.size > 0 && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-400">
+                                {selectedBridgedParquets.size} selected
+                              </span>
+                            )}
+                          </button>
+
+                          {!stage2DataCollapsed && (
+                            <div className="p-2 space-y-1 max-h-[200px] overflow-auto">
+                              {bridgedParquetsLoading ? (
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground p-2">
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                  Loading...
+                                </div>
+                              ) : bridgedParquetsResponse?.parquets && bridgedParquetsResponse.parquets.length > 0 ? (
+                                bridgedParquetsResponse.parquets.map((parquet) => {
+                                  const isSelected = selectedBridgedParquets.has(parquet.name)
+                                  return (
+                                    <label
+                                      key={parquet.name}
+                                      className={`flex items-center justify-between px-2.5 py-2 rounded cursor-pointer transition-colors ${
+                                        isSelected
+                                          ? 'bg-cyan-500/10 border border-cyan-500/30'
+                                          : 'bg-background/30 border border-border/20 hover:border-cyan-500/20'
+                                      }`}
                                     >
-                                      <Trash2 className="h-3 w-3" />
-                                    </button>
-                                  </div>
-                                </label>
-                              )
-                            })
-                          ) : (
-                            <div className="text-xs text-muted-foreground/60 p-2 text-center">
-                              No bridged parquets yet
+                                      <div className="flex items-center gap-2">
+                                        <input
+                                          type="checkbox"
+                                          checked={isSelected}
+                                          onChange={() => toggleBridgedParquet(parquet.name)}
+                                          className="rounded border-border text-cyan-500 focus:ring-cyan-500/50 h-3 w-3"
+                                        />
+                                        <div className="flex flex-col">
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-xs font-medium text-cyan-500/90">
+                                              {parquet.pair || parquet.name.replace('_bridged.parquet', '')}
+                                            </span>
+                                            {parquet.timeframe && (
+                                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary">
+                                                {parquet.timeframe}
+                                              </span>
+                                            )}
+                                            {parquet.adr_period && (
+                                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">
+                                                ADR{parquet.adr_period}
+                                              </span>
+                                            )}
+                                          </div>
+                                          <span className="text-[10px] text-muted-foreground/60">
+                                            {parquet.start_date && parquet.end_date
+                                              ? `${parquet.start_date} → ${parquet.end_date} | `
+                                              : ''
+                                            }{parquet.rows.toLocaleString()} rows
+                                          </span>
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[10px] text-muted-foreground/50">
+                                          {parquet.size_mb.toFixed(1)}MB
+                                        </span>
+                                        <button
+                                          onClick={(e) => {
+                                            e.preventDefault()
+                                            e.stopPropagation()
+                                            handleDeleteBridged(parquet.name)
+                                          }}
+                                          className="p-1 rounded hover:bg-red-500/20 text-red-500/70 hover:text-red-500 transition-all"
+                                          title="Delete"
+                                        >
+                                          <Trash2 className="h-3 w-3" />
+                                        </button>
+                                      </div>
+                                    </label>
+                                  )
+                                })
+                              ) : (
+                                <div className="text-xs text-muted-foreground/60 p-2 text-center">
+                                  No bridged parquets yet
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
-                      )}
-                    </div>
-                  </div>
+                      </div>
 
-                  {/* Delete status messages */}
-                  {deleteParquetsBatchMutation.isSuccess && (
-                    <div className="text-xs text-emerald-500/90 bg-emerald-500/10 px-2 py-1.5 rounded border border-emerald-500/20">
-                      ✓ Deleted {deleteParquetsBatchMutation.data.deleted.length} file(s)
-                    </div>
-                  )}
-                  {deleteParquetsBatchMutation.isError && (
-                    <div className="text-xs text-red-500/90 bg-red-500/10 px-2 py-1.5 rounded border border-red-500/20">
-                      Error: {deleteParquetsBatchMutation.error.message}
-                    </div>
+                      {/* Delete status messages */}
+                      {deleteParquetsBatchMutation.isSuccess && (
+                        <div className="text-xs text-emerald-500/90 bg-emerald-500/10 px-2 py-1.5 rounded border border-emerald-500/20">
+                          ✓ Deleted {deleteParquetsBatchMutation.data.deleted.length} file(s)
+                        </div>
+                      )}
+                      {deleteParquetsBatchMutation.isError && (
+                        <div className="text-xs text-red-500/90 bg-red-500/10 px-2 py-1.5 rounded border border-red-500/20">
+                          Error: {deleteParquetsBatchMutation.error.message}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </TabsContent>
 
               {/* Training Tab */}
-              <TabsContent value="training" className="mt-0 p-4 overflow-auto">
+              <TabsContent value="training" className="mt-0 p-4 h-full overflow-auto">
                 <TransformerTab workingDirectory={workingDirectory} />
               </TabsContent>
             </div>
@@ -1158,7 +1297,7 @@ export function LSTMPage() {
 
       {/* Main Content Area */}
       <Panel defaultSize={75} minSize={50}>
-        <div className="h-full bg-background p-4">
+        <div className="h-full bg-background p-4 overflow-hidden">
           {activeTab === 'training' ? (
             <ParquetViewer workingDirectory={workingDirectory} />
           ) : (

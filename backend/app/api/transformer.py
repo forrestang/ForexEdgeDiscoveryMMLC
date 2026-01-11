@@ -26,6 +26,8 @@ from app.schemas.transformer import (
     DeleteModelResponse,
     ValidationGenerateRequest,
     ValidationGenerateResponse,
+    ValidationFromSourceRequest,
+    ValidationFromSourceResponse,
     ValidationRunRequest,
     ValidationRunResponse,
     ValidationStatusResponse,
@@ -46,6 +48,12 @@ from app.schemas.transformer import (
     StartQueueRequest,
     StartQueueResponse,
     StopQueueResponse,
+    # Report schemas
+    TrainingReportSummary,
+    ReportsListResponse,
+    EpochDetail,
+    TrainingReportFull,
+    ReportDetailResponse,
 )
 from app.transformer.config import (
     get_default_sequence_length,
@@ -291,10 +299,7 @@ def _run_training(
             _training_state["message"] = "Training..."
 
         trainer.train()
-
-        # Export model if requested
-        if request.save_to_models_folder:
-            trainer.export_model(save_to_models_folder=True)
+        # Note: train() now automatically exports model and saves report
 
         with _training_lock:
             _training_state["status"] = "idle"
@@ -434,6 +439,118 @@ async def delete_model(request: DeleteModelRequest):
         )
 
 
+@router.post("/delete-report")
+async def delete_report(request: dict):
+    """Delete a training report."""
+    from app.transformer.storage import get_transformer_reports_path
+
+    working_dir = _get_working_dir(request.get("working_directory"))
+    filename = request.get("filename", "")
+
+    try:
+        reports_path = get_transformer_reports_path(working_dir)
+        report_file = reports_path / filename
+
+        if report_file.exists() and report_file.suffix == ".json":
+            report_file.unlink()
+            return {
+                "status": "deleted",
+                "message": f"Report '{filename}' deleted successfully",
+            }
+        else:
+            return {
+                "status": "not_found",
+                "message": f"Report '{filename}' not found",
+            }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
+@router.post("/delete-reports-bulk")
+async def delete_reports_bulk(request: dict):
+    """Delete multiple training reports at once."""
+    from app.transformer.storage import get_transformer_reports_path
+
+    working_dir = _get_working_dir(request.get("working_directory"))
+    filenames = request.get("filenames", [])
+
+    if not filenames:
+        return {"status": "error", "message": "No filenames provided", "deleted": 0}
+
+    try:
+        reports_path = get_transformer_reports_path(working_dir)
+        deleted_count = 0
+
+        for filename in filenames:
+            report_file = reports_path / filename
+            if report_file.exists() and report_file.suffix == ".json":
+                report_file.unlink()
+                deleted_count += 1
+
+        return {
+            "status": "deleted",
+            "message": f"Deleted {deleted_count} of {len(filenames)} reports",
+            "deleted": deleted_count,
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "deleted": 0,
+        }
+
+
+@router.post("/delete-models-bulk")
+async def delete_models_bulk(request: dict):
+    """Delete multiple saved models at once."""
+    from app.transformer.storage import get_transformer_models_path
+
+    working_dir = _get_working_dir(request.get("working_directory"))
+    model_names = request.get("model_names", [])
+
+    if not model_names:
+        return {"status": "error", "message": "No model names provided", "deleted": 0}
+
+    try:
+        models_path = get_transformer_models_path(working_dir)
+        deleted_count = 0
+
+        for model_name in model_names:
+            patterns = [
+                f"{model_name}_checkpoint.pt",
+                f"{model_name}_best.pt",
+                f"{model_name}_config.json",
+                f"{model_name}_state.json",
+                f"{model_name}.pt",
+            ]
+            deleted_any = False
+            for pattern in patterns:
+                file_path = models_path / pattern
+                if file_path.exists():
+                    file_path.unlink()
+                    deleted_any = True
+            if deleted_any:
+                deleted_count += 1
+
+        return {
+            "status": "deleted",
+            "message": f"Deleted {deleted_count} of {len(model_names)} models",
+            "deleted": deleted_count,
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "deleted": 0,
+        }
+
+
 # --- Validation State ---
 
 _validation_state = {
@@ -490,6 +607,129 @@ async def generate_validation_data(request: ValidationGenerateRequest):
             status="error",
             message=str(e),
             files_created=[],
+        )
+
+
+@router.post("/validation/generate-from-source", response_model=ValidationFromSourceResponse)
+async def generate_validation_from_source(request: ValidationFromSourceRequest):
+    """
+    Generate validation test data from a real source parquet file.
+
+    This uses real OHLC/timestamp data from the source, only replacing
+    the state and outcome columns with test patterns. This produces more
+    realistic test data that matches the actual data distribution.
+    """
+    working_dir = _get_working_dir(request.working_directory)
+
+    try:
+        from app.transformer.validation import (
+            generate_from_source_sanity,
+            generate_from_source_memory,
+            generate_from_source_logic,
+            generate_from_source_next,
+            generate_from_source_next5,
+            generate_from_source_close,
+            generate_from_source_max_up,
+            generate_from_source_max_down,
+            group_bars_into_sessions,
+        )
+        import polars as pl
+
+        # Resolve source parquet path (from bridged folder)
+        source_path = working_dir / "lstm" / "bridged" / request.source_parquet
+        if not source_path.exists():
+            return ValidationFromSourceResponse(
+                status="error",
+                message=f"Source parquet not found: {request.source_parquet}",
+            )
+
+        # Generate based on test type
+        if request.test_type == "sanity":
+            output_path = generate_from_source_sanity(
+                source_parquet=source_path,
+                output_dir=working_dir,
+                target_session=request.target_session,
+                timeframe=request.timeframe,
+                seed=request.seed,
+            )
+        elif request.test_type == "memory":
+            output_path = generate_from_source_memory(
+                source_parquet=source_path,
+                output_dir=working_dir,
+                target_session=request.target_session,
+                timeframe=request.timeframe,
+                seed=request.seed,
+            )
+        elif request.test_type == "logic":
+            output_path = generate_from_source_logic(
+                source_parquet=source_path,
+                output_dir=working_dir,
+                target_session=request.target_session,
+                timeframe=request.timeframe,
+                seed=request.seed,
+            )
+        elif request.test_type == "next":
+            output_path = generate_from_source_next(
+                source_parquet=source_path,
+                output_dir=working_dir,
+                target_session=request.target_session,
+                timeframe=request.timeframe,
+                seed=request.seed,
+            )
+        elif request.test_type == "next5":
+            output_path = generate_from_source_next5(
+                source_parquet=source_path,
+                output_dir=working_dir,
+                target_session=request.target_session,
+                timeframe=request.timeframe,
+                seed=request.seed,
+            )
+        elif request.test_type == "close":
+            output_path = generate_from_source_close(
+                source_parquet=source_path,
+                output_dir=working_dir,
+                target_session=request.target_session,
+                timeframe=request.timeframe,
+                seed=request.seed,
+            )
+        elif request.test_type == "max_up":
+            output_path = generate_from_source_max_up(
+                source_parquet=source_path,
+                output_dir=working_dir,
+                target_session=request.target_session,
+                timeframe=request.timeframe,
+                seed=request.seed,
+            )
+        elif request.test_type == "max_down":
+            output_path = generate_from_source_max_down(
+                source_parquet=source_path,
+                output_dir=working_dir,
+                target_session=request.target_session,
+                timeframe=request.timeframe,
+                seed=request.seed,
+            )
+        else:
+            return ValidationFromSourceResponse(
+                status="error",
+                message=f"Invalid test type: {request.test_type}. Use sanity, memory, logic, next, next5, close, max_up, or max_down.",
+            )
+
+        # Get output stats
+        df = pl.read_parquet(source_path)
+        sessions = group_bars_into_sessions(df, request.target_session, request.timeframe)
+
+        return ValidationFromSourceResponse(
+            status="success",
+            message=f"Generated {request.test_type} test data from {request.source_parquet}",
+            output_file=output_path.name,
+            rows=len(df),
+            sessions_found=len(sessions),
+        )
+
+    except Exception as e:
+        return ValidationFromSourceResponse(
+            status="error",
+            message=str(e),
         )
 
 
@@ -790,6 +1030,9 @@ async def get_parquet_data(
         level_col = f"{session}_state_level"
         event_col = f"{session}_state_event"
         dir_col = f"{session}_state_dir"
+        out_next_col = f"{session}_out_next"
+        out_next5_col = f"{session}_out_next5"
+        out_sess_col = f"{session}_out_sess"
         out_up_col = f"{session}_out_max_up"
         out_down_col = f"{session}_out_max_down"
 
@@ -798,6 +1041,9 @@ async def get_parquet_data(
                 level=row.get(level_col),
                 event=row.get(event_col),
                 dir=row.get(dir_col),
+                out_next=row.get(out_next_col),
+                out_next5=row.get(out_next5_col),
+                out_sess=row.get(out_sess_col),
                 out_max_up=row.get(out_up_col),
                 out_max_down=row.get(out_down_col),
             ))
@@ -849,7 +1095,11 @@ async def get_queue_status():
     with _queue_lock:
         cards = []
         for card in _queue_state["cards"]:
-            cards.append(TrainingCardStatus(**card["status"]))
+            status = card["status"].copy()
+            # Compute elapsed dynamically for training card
+            if status["status"] == "training" and card.get("start_time"):
+                status["elapsed_seconds"] = time.time() - card["start_time"]
+            cards.append(TrainingCardStatus(**status))
 
         return QueueStatusResponse(
             queue_running=_queue_state["running"],
@@ -974,13 +1224,19 @@ async def stop_queue():
 
 @router.post("/queue/clear")
 async def clear_queue():
-    """Clear all completed/error cards from the queue."""
+    """Clear queue cards. If running, keeps only the active training. If stopped, clears all."""
     with _queue_lock:
-        _queue_state["cards"] = [
-            c for c in _queue_state["cards"]
-            if c["status"]["status"] in ("pending", "training")
-        ]
-    return {"status": "cleared", "message": "Cleared completed and error cards"}
+        if _queue_state["running"]:
+            # Queue is running - only keep the currently training card
+            _queue_state["cards"] = [
+                c for c in _queue_state["cards"]
+                if c["status"]["status"] == "training"
+            ]
+            return {"status": "cleared", "message": "Cleared pending and completed cards (kept active training)"}
+        else:
+            # Queue is stopped - clear everything
+            _queue_state["cards"] = []
+            return {"status": "cleared", "message": "Cleared all cards from queue"}
 
 
 def _run_queue(working_directory: Optional[str]):
@@ -1004,20 +1260,39 @@ def _run_queue(working_directory: Optional[str]):
                 _queue_state["running"] = False
                 break
 
-            # Mark as training
+            # Mark as training and record start time
             next_card["status"]["status"] = "training"
+            next_card["start_time"] = time.time()  # For dynamic elapsed calculation
             _queue_state["current_card_id"] = next_card["status"]["card_id"]
-            card_start_time = time.time()
+            card_start_time = next_card["start_time"]
 
         # Run training for this card
         try:
             config_data = next_card["config"]
             target_session, combine_sessions = _parse_session_option(config_data["session_option"])
+            work_dir = Path(next_card.get("working_directory") or working_directory or ".")
+
+            # Determine parquet path first (needed for sequence_length auto-detection)
+            parquet_filename = config_data.get("parquet_file")
+            parquet_path = None
+            if parquet_filename:
+                parquet_path = work_dir / "lstm" / "bridged" / parquet_filename
+                if not parquet_path.exists():
+                    raise FileNotFoundError(f"Parquet file not found: {parquet_path}")
+
+            # Auto-detect sequence_length from actual parquet data
+            sequence_length = config_data["sequence_length"]
+            if parquet_path and parquet_path.exists():
+                from app.transformer.config import detect_sequence_length_from_parquet
+                detected_seq_len = detect_sequence_length_from_parquet(parquet_path, target_session)
+                print(f"Auto-detected sequence_length: {detected_seq_len} (frontend sent: {sequence_length})")
+                sequence_length = detected_seq_len
 
             config = TransformerConfig(
                 target_session=target_session,
                 combine_sessions=combine_sessions,
-                sequence_length=config_data["sequence_length"],
+                target_outcome=config_data.get("target_outcome", "max_up"),
+                sequence_length=sequence_length,
                 batch_size=config_data["batch_size"],
                 d_model=config_data["d_model"],
                 n_layers=config_data["n_layers"],
@@ -1028,21 +1303,17 @@ def _run_queue(working_directory: Optional[str]):
                 early_stopping_patience=config_data["early_stopping_patience"],
             )
 
-            work_dir = Path(next_card.get("working_directory") or working_directory or ".")
-
             trainer = TransformerTrainer(
                 config=config,
                 working_directory=work_dir,
                 model_name=config_data["model_name"],
             )
 
-            # Use specific parquet file if provided
-            parquet_filename = config_data.get("parquet_file")
-            if parquet_filename:
-                parquet_path = work_dir / "lstm" / "bridged" / parquet_filename
-                if not parquet_path.exists():
-                    raise FileNotFoundError(f"Parquet file not found: {parquet_path}")
-                trainer.setup(parquet_files=[parquet_path])
+            # Setup trainer with the parquet file
+            if parquet_path:
+                # Pass the same file twice so train/val split works (splits by file)
+                # With val_ratio=0.5, each gets one copy of the file
+                trainer.setup(parquet_files=[parquet_path, parquet_path], val_ratio=0.5)
 
             # Callback to update card status
             def on_epoch_end(epoch, metrics):
@@ -1071,10 +1342,7 @@ def _run_queue(working_directory: Optional[str]):
             trainer.should_stop = check_should_stop
 
             state = trainer.train()
-
-            # Export model if requested
-            if config_data.get("save_to_models_folder", True):
-                trainer.export_model(save_to_models_folder=True)
+            # Note: train() now automatically exports model and saves report
 
             # Mark completed with final metrics
             with _queue_lock:
@@ -1103,3 +1371,93 @@ def _run_queue(working_directory: Optional[str]):
     with _queue_lock:
         _queue_state["running"] = False
         _queue_state["current_card_id"] = None
+
+
+# --- Report Endpoints ---
+
+
+@router.get("/reports", response_model=ReportsListResponse)
+async def list_reports(working_directory: Optional[str] = None):
+    """List all training reports from the reports folder."""
+    working_dir = _get_working_dir(working_directory)
+
+    try:
+        from app.transformer.storage import get_transformer_reports_path
+
+        reports_path = get_transformer_reports_path(working_dir)
+
+        reports = []
+        if reports_path.exists():
+            for report_file in sorted(reports_path.glob("*_report.json"), reverse=True):
+                try:
+                    with open(report_file, "r") as f:
+                        data = json.load(f)
+
+                    summary = data.get("summary", {})
+                    config = data.get("config", {})
+
+                    reports.append(TrainingReportSummary(
+                        filename=report_file.name,
+                        model_name=data.get("model_name", "unknown"),
+                        timestamp=data.get("timestamp", ""),
+                        directional_accuracy=summary.get("final_directional_accuracy", 0.0),
+                        r_squared=summary.get("final_r_squared", 0.0),
+                        best_loss=summary.get("best_val_loss", 0.0),
+                        total_epochs=summary.get("total_epochs", 0),
+                        target_session=config.get("target_session"),
+                        elapsed_seconds=summary.get("elapsed_seconds"),
+                    ))
+                except Exception as e:
+                    print(f"Warning: Failed to parse report {report_file.name}: {e}")
+
+        return ReportsListResponse(reports=reports)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/reports/{filename}", response_model=ReportDetailResponse)
+async def get_report(filename: str, working_directory: Optional[str] = None):
+    """Get full content of a specific training report."""
+    working_dir = _get_working_dir(working_directory)
+
+    try:
+        from app.transformer.storage import get_transformer_reports_path
+
+        reports_path = get_transformer_reports_path(working_dir)
+        report_file = reports_path / filename
+
+        if not report_file.exists():
+            raise HTTPException(status_code=404, detail=f"Report not found: {filename}")
+
+        with open(report_file, "r") as f:
+            data = json.load(f)
+
+        # Parse epochs
+        epochs = []
+        for epoch_data in data.get("epochs", []):
+            epochs.append(EpochDetail(
+                epoch=epoch_data.get("epoch", 0),
+                train_loss=epoch_data.get("train_loss", 0.0),
+                val_loss=epoch_data.get("val_loss"),
+                directional_accuracy=epoch_data.get("directional_accuracy"),
+                r_squared=epoch_data.get("r_squared"),
+                max_error=epoch_data.get("max_error"),
+                grad_norm=epoch_data.get("grad_norm"),
+            ))
+
+        report = TrainingReportFull(
+            filename=filename,
+            model_name=data.get("model_name", "unknown"),
+            timestamp=data.get("timestamp", ""),
+            config=data.get("config", {}),
+            summary=data.get("summary", {}),
+            epochs=epochs,
+        )
+
+        return ReportDetailResponse(report=report)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

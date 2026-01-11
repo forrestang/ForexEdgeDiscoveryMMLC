@@ -139,13 +139,27 @@ class DeleteModelResponse(BaseModel):
     message: str
 
 
+class DeleteReportRequest(BaseModel):
+    """Request to delete a training report."""
+
+    filename: str
+    working_directory: Optional[str] = None
+
+
+class DeleteReportResponse(BaseModel):
+    """Response from report deletion."""
+
+    status: str  # deleted, not_found, error
+    message: str
+
+
 # ================================================================
 # Validation Schemas
 # ================================================================
 
 
 class ValidationGenerateRequest(BaseModel):
-    """Request to generate validation test data."""
+    """Request to generate validation test data (pure synthetic)."""
 
     test_type: str = Field(description="Test type: sanity, memory, or all")
     n_sessions: int = Field(default=500, ge=100, le=5000)
@@ -159,6 +173,28 @@ class ValidationGenerateResponse(BaseModel):
     status: str  # success, error
     message: str
     files_created: list[str] = []
+
+
+class ValidationFromSourceRequest(BaseModel):
+    """Request to generate validation test data from a real source parquet."""
+
+    source_parquet: str = Field(description="Source parquet filename in lstm/raw/")
+    test_type: str = Field(description="Test type: sanity, memory, logic, next, close, max_up, or max_down")
+    target_session: str = Field(default="lon", description="Session: asia, lon, ny, day, asialon, lonny")
+    timeframe: str = Field(default="M5", description="Timeframe: M1, M5, M10, M15, M30, H1, H4")
+    adr_value: float = Field(default=0.0050, ge=0.0001, le=0.1, description="Fixed ADR value")
+    seed: int = Field(default=42, description="Random seed for reproducibility")
+    working_directory: Optional[str] = None
+
+
+class ValidationFromSourceResponse(BaseModel):
+    """Response from generating validation data from source."""
+
+    status: str  # success, error
+    message: str
+    output_file: Optional[str] = None
+    rows: int = 0
+    sessions_found: int = 0
 
 
 class ValidationRunRequest(BaseModel):
@@ -226,6 +262,9 @@ class StateData(BaseModel):
     level: Optional[int] = None
     event: Optional[str] = None
     dir: Optional[str] = None
+    out_next: Optional[float] = None
+    out_next5: Optional[float] = None
+    out_sess: Optional[float] = None
     out_max_up: Optional[float] = None
     out_max_down: Optional[float] = None
 
@@ -261,6 +300,7 @@ class TrainingCardConfig(BaseModel):
     model_name: str
     parquet_file: str  # Specific parquet file to train on
     session_option: str  # asia, lon, ny, day, asia_lon, lon_ny
+    target_outcome: str = "max_up"  # Options: max_up, max_down, next, sess
     sequence_length: int = 64
     batch_size: int = 32
     d_model: int = 128
@@ -352,3 +392,57 @@ class StopQueueResponse(BaseModel):
 
     status: str  # stopping, not_running
     message: Optional[str] = None
+
+
+# ================================================================
+# Training Report Schemas
+# ================================================================
+
+
+class TrainingReportSummary(BaseModel):
+    """Summary info for a training report (for listing)."""
+
+    filename: str
+    model_name: str
+    timestamp: str
+    directional_accuracy: float
+    r_squared: float
+    best_loss: float
+    total_epochs: int
+    target_session: Optional[str] = None
+    elapsed_seconds: Optional[float] = None
+
+
+class ReportsListResponse(BaseModel):
+    """Response for listing training reports."""
+
+    reports: list[TrainingReportSummary]
+
+
+class EpochDetail(BaseModel):
+    """Detail for a single training epoch."""
+
+    epoch: int
+    train_loss: float
+    val_loss: Optional[float] = None
+    directional_accuracy: Optional[float] = None
+    r_squared: Optional[float] = None
+    max_error: Optional[float] = None
+    grad_norm: Optional[float] = None
+
+
+class TrainingReportFull(BaseModel):
+    """Full training report content."""
+
+    filename: str
+    model_name: str
+    timestamp: str
+    config: dict
+    summary: dict
+    epochs: list[EpochDetail]
+
+
+class ReportDetailResponse(BaseModel):
+    """Response for a single report detail."""
+
+    report: TrainingReportFull

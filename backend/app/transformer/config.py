@@ -80,6 +80,47 @@ def get_default_sequence_length(
     return total_minutes // minutes_per_bar
 
 
+def detect_sequence_length_from_parquet(
+    parquet_path: Path,
+    session: str,
+) -> int:
+    """
+    Analyze parquet data to find optimal sequence length.
+
+    Counts the actual number of bars per session in the data and returns
+    the median, which is robust to outliers from incomplete sessions.
+
+    Args:
+        parquet_path: Path to the enriched parquet file
+        session: Target session (asia, lon, ny, day)
+
+    Returns:
+        Median number of bars per session in the data
+    """
+    import polars as pl
+    import numpy as np
+    from app.transformer.validation import group_bars_into_sessions
+
+    df = pl.read_parquet(parquet_path)
+
+    # group_bars_into_sessions uses session time windows to group bars
+    # The timeframe parameter is only used for logging, not filtering
+    sessions = group_bars_into_sessions(df, session, "M5")
+
+    if not sessions:
+        print(f"  Warning: No sessions found in parquet, using default sequence_length=64")
+        return 64  # Fallback default
+
+    # Get bar counts per session
+    bar_counts = [len(indices) for indices, _ in sessions]
+
+    # Return median (robust to outliers from incomplete sessions)
+    median_bars = int(np.median(bar_counts))
+    print(f"  Session bar counts: min={min(bar_counts)}, median={median_bars}, max={max(bar_counts)}")
+
+    return median_bars
+
+
 @dataclass
 class TransformerConfig:
     """
@@ -91,6 +132,7 @@ class TransformerConfig:
     # === Data Settings ===
     target_session: str = "lon"  # Session prefix: asia, lon, ny, day
     combine_sessions: Optional[str] = None  # e.g., "asia+lon", "lon+ny"
+    target_outcome: str = "max_up"  # Options: "max_up", "max_down", "next", "next5", "sess"
     sequence_length: int = 64  # Fixed window size
     batch_size: int = 32
 
@@ -154,6 +196,7 @@ class TransformerConfig:
             # Data
             "target_session": self.target_session,
             "combine_sessions": self.combine_sessions,
+            "target_outcome": self.target_outcome,
             "sequence_length": self.sequence_length,
             "batch_size": self.batch_size,
             # Model
@@ -248,6 +291,7 @@ class TransformerConfig:
             "data": {
                 "target_session": self.target_session,
                 "combine_sessions": self.combine_sessions,
+                "target_outcome": self.target_outcome,
                 "sequence_length": self.sequence_length,
                 "batch_size": self.batch_size,
             },
@@ -307,6 +351,7 @@ class TrainingState:
     final_directional_accuracy: Optional[float] = None
     final_r_squared: Optional[float] = None
     final_max_error: Optional[float] = None
+    elapsed_seconds: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -322,6 +367,7 @@ class TrainingState:
             "final_directional_accuracy": self.final_directional_accuracy,
             "final_r_squared": self.final_r_squared,
             "final_max_error": self.final_max_error,
+            "elapsed_seconds": self.elapsed_seconds,
         }
 
     def save(self, path: Path):

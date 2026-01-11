@@ -54,6 +54,7 @@ class BarState:
 class BarOutcome:
     """Forward-looking outcome for a bar."""
     next_bar_delta: float       # Close[T+1] - Close[T]
+    next5_bar_delta: float      # Close[T+5] - Close[T] (or session close if T+5 > last)
     session_close_delta: float  # Close[SessionEnd] - Close[T]
     session_max_up: float       # Highest[T...SessionEnd] - Close[T]
     session_max_down: float     # Lowest[T...SessionEnd] - Close[T]
@@ -766,6 +767,15 @@ class MMLCCore:
             else:
                 next_bar_delta = 0.0
 
+            # next5_bar_delta: Price[i+5] - Price[i], or session_close if i+5 > last
+            target_idx_5 = bar_idx + 5
+            if target_idx_5 <= last_bar_idx:
+                next5_close = candles[target_idx_5].close
+                next5_bar_delta = next5_close - current_close
+            else:
+                # Edge case: use session close price
+                next5_bar_delta = session_close - current_close
+
             # session_close_delta
             session_close_delta = session_close - current_close
 
@@ -781,6 +791,7 @@ class MMLCCore:
 
             outcomes.append(BarOutcome(
                 next_bar_delta=next_bar_delta,
+                next5_bar_delta=next5_bar_delta,
                 session_close_delta=session_close_delta,
                 session_max_up=max_high - current_close,
                 session_max_down=min_low - current_close
